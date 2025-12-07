@@ -251,8 +251,12 @@ command_syntax:
     const STATE_BLOCK_START_MARKER = NEW_START_MARKER;
     const STATE_BLOCK_END_MARKER = NEW_END_MARKER;
 
-    var TavernHelper = window.TavernHelper;
     var { eventSource, event_types } = SillyTavern.getContext();
+    var _ = require('lodash');
+
+    // a flag to pause everything.
+    // for example, when chat length is 0, we pause everything until chat length is >= 1.
+    var pauseFlag = 0;
 
 
     // NEW: Regexes now match EITHER format for parsing and removing
@@ -308,16 +312,48 @@ command_syntax:
         const oldHandlers = window[HANDLER_STORAGE_KEY];
         if (!oldHandlers) { logger.info("No previous instance found. Starting fresh."); return; }
         logger.info("Found a previous instance. Removing its event listeners to prevent duplicates.");
-        TavernHelper._bind._eventRemoveListener(TavernHelper.tavern_events.GENERATION_STARTED, oldHandlers.handleGenerationStarted);
-        TavernHelper._bind._eventRemoveListener(TavernHelper.tavern_events.GENERATION_ENDED, oldHandlers.handleGenerationEnded);
-        TavernHelper._bind._eventRemoveListener(TavernHelper.tavern_events.MESSAGE_SWIPED, oldHandlers.handleMessageSwiped);
-        TavernHelper._bind._eventRemoveListener(TavernHelper.tavern_events.MESSAGE_DELETED, oldHandlers.handleMessageDeleted);
-        TavernHelper._bind._eventRemoveListener(TavernHelper.tavern_events.MESSAGE_EDITED, oldHandlers.handleMessageEdited);
-        TavernHelper._bind._eventRemoveListener(TavernHelper.tavern_events.CHAT_CHANGED, oldHandlers.handleChatChanged);
-        TavernHelper._bind._eventRemoveListener(TavernHelper.tavern_events.MESSAGE_SENT, oldHandlers.handleMessageSent);
-        TavernHelper._bind._eventRemoveListener(TavernHelper.tavern_events.GENERATION_STOPPED, oldHandlers.handleGenerationStopped);
+        eventSource.off(event_types.GENERATION_STARTED, oldHandlers.handleGenerationStarted);
+        eventSource.off(event_types.GENERATION_ENDED, oldHandlers.handleGenerationEnded);
+        eventSource.off(event_types.MESSAGE_SWIPED, oldHandlers.handleMessageSwiped);
+        eventSource.off(event_types.MESSAGE_DELETED, oldHandlers.handleMessageDeleted);
+        eventSource.off(event_types.MESSAGE_EDITED, oldHandlers.handleMessageEdited);
+        eventSource.off(event_types.CHAT_CHANGED, oldHandlers.handleChatChanged);
+        eventSource.off(event_types.MESSAGE_SENT, oldHandlers.handleMessageSent);
+        eventSource.off(event_types.GENERATION_STOPPED, oldHandlers.handleGenerationStopped);
         delete window[HANDLER_STORAGE_KEY];
     };
+
+    
+
+    async function getVariables(){
+
+        if (!SillyTavern.getContext().variables.local.has("SAM_data")){
+            return {};
+        }
+        return SillyTavern.getContext().variables.local.get("SAM_data");
+    }
+
+    async function setAllVariables(newData){
+        if (!newData || typeof newData !== 'object'){
+            return;
+        }
+        SillyTavern.getContext().variables.local.set("SAM_data", newData);
+        return 0;
+    }
+
+    async function sam_renewVariables(SAM_data){
+        
+        let curr_variables = await getVariables();
+        if (!curr_variables || !curr_variables.SAM_data){
+            console.log("[SAM] tried to renew, but SAM_data variable not found!");
+            return -1;
+        }
+
+        _.set(curr_variables, "SAM_data", goodCopy(SAM_data));
+        await setAllVariables(curr_variables);
+        return 0;
+    }
+
 
     // --- HELPER FUNCTIONS ---
     // V3.7.0: Dynamic Loader for Repair Library
@@ -562,15 +598,44 @@ command_syntax:
         return null;
     }
 
+
+    // getWI: 
+    async function sam_getWorldbook(name) {
+
+        // get world name. name is a str
+
+        // find the target index.
+        let index = 0;
+        for (let i = 0; i < SillyTavern.getContext().characters.length; i++) {
+            if (SillyTavern.getContext().characters[i].name === name) {
+                index = i;
+                break;
+            }
+        }
+
+        if (index < 0 || index >= SillyTavern.getContext().characters.length) {
+            return {};
+        }
+
+        let winame = SillyTavern.getContext().characters[index].data.extensions.world
+
+        let wi = await loadWorldInfo(winame);
+        return wi
+    }
+
+    async function getCurrentWorldbookName() {
+        let curr_name = SillyTavern.getContext().characters[SillyTavern.getContext().characterId].name;
+        return await sam_getWorldbook(curr_name);
+    }
+
+
+
+
     async function getBaseDataFromWI() {
         const WI_ENTRY_NAME = "__SAM_base_data__";
         try {
-            const worldbookNames = await TavernHelper.getCharWorldbookNames("current");
-            if (!worldbookNames || !worldbookNames.primary) {
-                logger.info(`Base data check: No primary worldbook assigned.`);
-                return null;
-            }
-            const wi = await getWorldbook(worldbookNames.primary);
+
+            const wi = await getCurrentWorldbookName();
             if (!wi || !Array.isArray(wi)) {
                 logger.warn(`Base data check: Could not retrieve entries for worldbook "${worldbookNames.primary}".`);
                 return null;
@@ -1103,7 +1168,7 @@ command_syntax:
             await new Promise(resolve => setTimeout(resolve, DELAY_MS));
 
             // 🔧 异步更新变量，避免阻塞
-            await TavernHelper.updateVariablesWith(variables => { _.set(variables, "SAM_data", goodCopy(newState)); return variables });
+            await sam_renewVariables(newState);
 
             // 🔧 释放主线程
             await new Promise(resolve => setTimeout(resolve, DELAY_MS));
@@ -1161,7 +1226,7 @@ command_syntax:
             }
         }
 
-        await TavernHelper.updateVariablesWith(variables => { _.set(variables, "SAM_data", goodCopy(state)); return variables });
+        await sam_renewVariables(state);
         logger.info(`SAM_data in global variables updated.`);
         return state;
     }
@@ -1208,16 +1273,16 @@ command_syntax:
             switch (curr_state) {
                 case STATES.IDLE:
                     switch (event) {
-                        case TavernHelper.tavern_events.MESSAGE_SENT:
-                        case TavernHelper.tavern_events.GENERATION_STARTED: // GENERATION_STARTED covers both regular and swipe/regenerate flows
+                        case event_types.MESSAGE_SENT:
+                        case event_types.GENERATION_STARTED: // GENERATION_STARTED covers both regular and swipe/regenerate flows
                             if (event_params[2]) { logger.info("[IDLE] Dry run detected, ignoring."); return; } // Dry run means no actual generation
                             if (event_params[0] === "swipe" || event_params[0] === "regenerate") {
                                 logger.info(`[IDLE] ${event_params[0]} detected. Preparing prevState from message before latest user msg.`);
                                 await loadStateToMemory(findLatestUserMsgIndex()); // Load state up to before the user's message
                                 // The SAM_data global variable is now the state right before the AI's response.
                                 // We store it as prevState for the *next* processMessageState call.
-                                prevState = goodCopy((await TavernHelper.getVariables()).SAM_data);
-                            } else if (event === TavernHelper.tavern_events.MESSAGE_SENT) {
+                                prevState = goodCopy((await getVariables()).SAM_data);
+                            } else if (event === event_types.MESSAGE_SENT) {
                                 logger.info("[IDLE] User message sent. Preparing prevState from message before the new user msg.");
                                 // For a normal turn after a user message, prevState is the state from the last AI message.
                                 const lastAiIndex = await findLastAiMessageAndIndex();
@@ -1227,21 +1292,21 @@ command_syntax:
                             startGenerationWatcher();
                             break;
 
-                        case TavernHelper.tavern_events.MESSAGE_SWIPED:
-                        case TavernHelper.tavern_events.MESSAGE_DELETED:
-                        case TavernHelper.tavern_events.MESSAGE_EDITED: // An edit can alter commands, so resync
-                        case TavernHelper.tavern_events.CHAT_CHANGED: // Chat change always requires full sync
+                        case event_types.MESSAGE_SWIPED:
+                        case event_types.MESSAGE_DELETED:
+                        case event_types.MESSAGE_EDITED: // An edit can alter commands, so resync
+                        case event_types.CHAT_CHANGED: // Chat change always requires full sync
                             logger.info(`[IDLE] ${event} detected. Synchronizing state.`);
                             await sync_latest_state();
-                            prevState = goodCopy((await TavernHelper.getVariables()).SAM_data); // Update prevState after sync
+                            prevState = goodCopy((await getVariables()).SAM_data); // Update prevState after sync
                             break;
                     }
                     break;
                 case STATES.AWAIT_GENERATION:
                     switch (event) {
-                        case TavernHelper.tavern_events.GENERATION_STOPPED:
+                        case event_types.GENERATION_STOPPED:
                         case FORCE_PROCESS_COMPLETION:
-                        case TavernHelper.tavern_events.GENERATION_ENDED:
+                        case event_types.GENERATION_ENDED:
                             stopGenerationWatcher();
                             curr_state = STATES.PROCESSING;
                             logger.info("[AWAIT] Processing latest message.");
@@ -1253,11 +1318,11 @@ command_syntax:
                             // After processing, clear prevState as it's now incorporated into the chat history
                             prevState = null;
                             break;
-                        case TavernHelper.tavern_events.CHAT_CHANGED:
+                        case event_types.CHAT_CHANGED:
                             stopGenerationWatcher();
                             logger.info('[AWAIT] Chat changed during generation. Aborting and returning to IDLE.');
                             await sync_latest_state();
-                            prevState = goodCopy((await TavernHelper.getVariables()).SAM_data); // Update prevState after sync
+                            prevState = goodCopy((await getVariables()).SAM_data); // Update prevState after sync
                             curr_state = STATES.IDLE;
                             break;
                     }
@@ -1317,43 +1382,43 @@ command_syntax:
     const handlers = {
 		handleGenerationStarted: async (ev, options, dry_run) => {
 			await unifiedEventHandler(
-				TavernHelper.tavern_events.GENERATION_STARTED,
+				event_types.GENERATION_STARTED,
 				ev,
 				options,
 				dry_run,
 			);
 		},
 		handleGenerationEnded: async () => {
-			await unifiedEventHandler(TavernHelper.tavern_events.GENERATION_ENDED);
+			await unifiedEventHandler(event_types.GENERATION_ENDED);
 		},
 		handleMessageSwiped: () => {
 			setTimeout(async () => {
-				await unifiedEventHandler(TavernHelper.tavern_events.MESSAGE_SWIPED);
+				await unifiedEventHandler(event_types.MESSAGE_SWIPED);
 			}, 0);
 		},
 		handleMessageDeleted: (message) => {
 			setTimeout(async () => {
-				await unifiedEventHandler(TavernHelper.tavern_events.MESSAGE_DELETED, message);
+				await unifiedEventHandler(event_types.MESSAGE_DELETED, message);
 			}, 0);
 		},
 		handleMessageEdited: () => {
 			setTimeout(async () => {
-				await unifiedEventHandler(TavernHelper.tavern_events.MESSAGE_EDITED);
+				await unifiedEventHandler(event_types.MESSAGE_EDITED);
 			}, 0);
 		},
 		handleChatChanged: () => {
 			setTimeout(async () => {
-				await unifiedEventHandler(TavernHelper.tavern_events.CHAT_CHANGED);
+				await unifiedEventHandler(event_types.CHAT_CHANGED);
 			}, 10);
 		},
 		handleMessageSent: () => {
 			setTimeout(async () => {
-				await unifiedEventHandler(TavernHelper.tavern_events.MESSAGE_SENT);
+				await unifiedEventHandler(event_types.MESSAGE_SENT);
 			}, 0);
 		},
 		handleGenerationStopped: () => {
 			setTimeout(async () => {
-				await unifiedEventHandler(TavernHelper.tavern_events.GENERATION_STOPPED);
+				await unifiedEventHandler(event_types.GENERATION_STOPPED);
 			}, 0);
 		},
 	};
@@ -1395,7 +1460,7 @@ command_syntax:
             }
 
             // 1. Get the absolute latest state from memory
-            const currentState = (await TavernHelper.getVariables()).SAM_data;
+            const currentState = (await getVariables()).SAM_data;
             if (!currentState) {
                 toastr.error("Current state is invalid. Cannot checkpoint.");
                 logger.error("Manual checkpoint failed: `SAM_data` is null or undefined.");
@@ -1453,10 +1518,7 @@ command_syntax:
 
             logger.info(`Found ${newCommands.length} command(s) in message ${lastAiIndex} to rerun.`);
             const newState = await executeCommandPipeline(newCommands, initialState); // Execute only the new commands
-            await TavernHelper.updateVariablesWith(variables => {
-                _.set(variables, "SAM_data", goodCopy(newState));
-                return variables;
-            });
+            await sam_renewVariables(newState);
             logger.info("Live variables updated with rerun state.");
 
             // Decide whether to write a checkpoint after rerun
@@ -1527,7 +1589,7 @@ command_syntax:
         // The most reliable way to get the current state is from the global variables,
         // as the script keeps it in sync.
         try {
-            const variables = await TavernHelper.getVariables();
+            const variables = await getVariables();
             return variables.SAM_data;
         } catch (error) {
             logger.error("[External API] Failed to get SAM_data from variables.", error);
@@ -1571,7 +1633,7 @@ command_syntax:
             
             // Update the message permanently and also the live variables
             await setChatMessages([{'message_id': lastAiIndex, 'message': finalContent}]);
-            await TavernHelper.updateVariablesWith(variables => { _.set(variables, "SAM_data", goodCopy(newData)); return variables });
+            await sam_renewVariables(newData);
 
             logger.info(`[External API] Data set and saved to message at index ${lastAiIndex}.`);
             toastr.success("SAM API: Data block updated successfully!");
@@ -1599,104 +1661,82 @@ command_syntax:
         sam_abort_cycle,
     };
 
+
+
+
+
+
 (() => {
     // Wait for the DOM to be fully loaded before running any code.
     $(() => {
-        console.log("SAM: DOM content loaded. Waiting for 1 second to ensure all external scripts are fully initialized...");
-         eventSource, event_types  = SillyTavern.getContext();
-        // getting rid of the old definitions of TavernHelper.
+        console.log("SAM: DOM content loaded. Initializing...");
 
+        try {
+            cleanupPreviousInstance();
+            const initializeOrReloadStateForCurrentChat = async () => {
+                logger.info("Initializing or reloading state for current chat.");
+                const lastAiIndex = await findLastAiMessageAndIndex();
+                await loadStateToMemory(lastAiIndex);
+                prevState = goodCopy((await getVariables()).SAM_data);
+                logger.info("Initialization finalized, prevState primed.");
+            };
 
+            // Bind all Tavern events.
+            eventSource.makeFirst(event_types.GENERATION_STARTED, handlers.handleGenerationStarted);
+            eventSource.on(event_types.GENERATION_ENDED, handlers.handleGenerationEnded);
+            eventSource.on(event_types.MESSAGE_SWIPED, handlers.handleMessageSwiped);
+            eventSource.on(event_types.MESSAGE_DELETED, handlers.handleMessageDeleted);
+            eventSource.on(event_types.MESSAGE_EDITED, handlers.handleMessageEdited);
+            eventSource.on(event_types.CHAT_CHANGED, handlers.handleChatChanged);
+            eventSource.on(event_types.MESSAGE_SENT, handlers.handleMessageSent);
+            eventSource.on(event_types.GENERATION_STOPPED, handlers.handleGenerationStopped);
+            window[HANDLER_STORAGE_KEY] = handlers;
 
-        // Use a simple, fixed delay of 1000ms (1 second).
-        // This gives other scripts, including the one that populates TavernHelper's API, ample time to complete.
-        setTimeout(() => {
-            console.log("SAM: 1-second delay complete. Attempting to initialize.");
-
-            // Directly assign the global instance to our script-scoped variable.
-            TavernHelper = window.TavernHelper;
-
-            // CRITICAL CHECK: After waiting, we still must verify that the API is ready.
-            // If it's not here after a full second, something is seriously wrong.
-            if (!TavernHelper || typeof TavernHelper._bind?._eventOn !== 'function') {
-                console.error("SAM CRITICAL ERROR: TavernHelper API is still not available after a 1-second delay. The extension will not function.");
-                logger.error("SAM CRITICAL ERROR: TavernHelper API is still not available after a 1-second delay.");
-                // alert("Situational Awareness Manager failed to load. A critical component (TavernHelper) was not available in time.");
-                return; // Stop execution to prevent further errors.
-            }
-
-            // If the check passes, we can now safely run our main initialization logic.
+            // no more debug buttons! All buttons will be displayed in plugin UI.
+            /*
             try {
-                console.log("SAM: TavernHelper API is available. Initializing now.");
-                console.log(`Got bind functions: ${JSON.stringify(Object.keys(TavernHelper._bind))}`);
-                
-                cleanupPreviousInstance();
-                const initializeOrReloadStateForCurrentChat = async () => {
-                    logger.info("Initializing or reloading state for current chat.");
-                    const lastAiIndex = await findLastAiMessageAndIndex();
-                    await loadStateToMemory(lastAiIndex);
-                    prevState = goodCopy((await TavernHelper.getVariables()).SAM_data);
-                    logger.info("Initialization finalized, prevState primed.");
-                };
+                const resetEvent = getButtonEvent("重置内部状态（慎用）");
+                const rerunLatestCommandsEvent = getButtonEvent("再次执行（慎用）");
+                const displayLogEvent = getButtonEvent("执行日志");
+                const checkpointEvent = getButtonEvent("手动检查点");
 
-                // Bind all Tavern events now that it's safe to do so.
-                eventSource.makeFirst(event_types.GENERATION_STARTED, handlers.handleGenerationStarted);
-                eventSource.on(event_types.GENERATION_ENDED, handlers.handleGenerationEnded);
-                eventSource.on(event_types.MESSAGE_SWIPED, handlers.handleMessageSwiped);
-                eventSource.on(event_types.MESSAGE_DELETED, handlers.handleMessageDeleted);
-                eventSource.on(event_types.MESSAGE_EDITED, handlers.handleMessageEdited);
-                eventSource.on(event_types.CHAT_CHANGED, handlers.handleChatChanged);
-                eventSource.on(event_types.MESSAGE_SENT, handlers.handleMessageSent);
-                eventSource.on(event_types.GENERATION_STOPPED, handlers.handleGenerationStopped);
-                window[HANDLER_STORAGE_KEY] = handlers;
-
-                // First try-catch block for main debug buttons
-                try {
-                    const resetEvent = getButtonEvent("重置内部状态（慎用）");
-                    const rerunLatestCommandsEvent = getButtonEvent("再次执行（慎用）");
-                    const displayLogEvent = getButtonEvent("执行日志");
-                    const checkpointEvent = getButtonEvent("手动检查点");
-
-                    if (resetEvent) TavernHelper._bind._eventOn(resetEvent, resetCurrentState);
-                    if (rerunLatestCommandsEvent) TavernHelper._bind._eventOn(rerunLatestCommandsEvent, rerunLatestCommands);
-                    if (displayLogEvent) TavernHelper._bind._eventOn(displayLogEvent, displayLogs);
-                    if (checkpointEvent) TavernHelper._bind._eventOn(checkpointEvent, manualCheckpoint);
-                } catch (e) {
-                    logger.warn("Could not find debug buttons. This is normal if they are not defined in the UI.", e);
-                }
-
-                // Second try-catch block for the generation status button
-                try {
-                    const checkGenerationStatusEvent = getButtonEvent("确认运行")
-                    if (checkGenerationStatusEvent) TavernHelper._bind._eventOn(
-                        () => {
-                            alert(`Stuck state resolver visibility (is-generating) status == ${$('#mes_stop').is(':visible')}`);
-                        }
-                    );
-                } catch(e) {
-                    // Silently fail if this button isn't present.
-                }
-
-                // Final try-catch block for initialization logic
-                try {
-                    logger.info(`V${SCRIPT_VERSION} loaded. GLHF, player.`);
-                    initializeOrReloadStateForCurrentChat();
-                    session_id = JSON.stringify(new Date());
-                    sessionStorage.setItem(SESSION_STORAGE_KEY, session_id);
-                    logger.info(`Assigned new session ID: ${session_id}`);
-                } catch (error) {
-                    logger.error("Error during final initialization:", error);
-                }
-
-            } catch (error) {
-                console.error("SAM: A fatal error occurred during initialization.", error);
-                logger.error("A fatal error occurred during SAM initialization:", error);
+                if (resetEvent) eventOn(resetEvent, resetCurrentState);
+                if (rerunLatestCommandsEvent) eventOn(rerunLatestCommandsEvent, rerunLatestCommands);
+                if (displayLogEvent) eventOn(displayLogEvent, displayLogs);
+                if (checkpointEvent) eventOn(checkpointEvent, manualCheckpoint);
+            } catch (e) {
+                logger.warn("Could not find debug buttons. This is normal if they are not defined in the UI.", e);
             }
 
-        }, 1000); // 1000 milliseconds = 1 second
+            // Second try-catch block for the generation status button
+            try {
+                const checkGenerationStatusEvent = getButtonEvent("确认运行")
+                if (checkGenerationStatusEvent) eventOn(
+                    () => {
+                        alert(`Stuck state resolver visibility (is-generating) status == ${$('#mes_stop').is(':visible')}`);
+                    }
+                );
+            } catch(e) {
+                // Silently fail if this button isn't present.
+            }
+                */
+
+            // Final try-catch block for initialization logic
+            try {
+                logger.info(`V${SCRIPT_VERSION} loaded. GLHF, player.`);
+                initializeOrReloadStateForCurrentChat();
+                session_id = JSON.stringify(new Date());
+                sessionStorage.setItem(SESSION_STORAGE_KEY, session_id);
+                logger.info(`Assigned new session ID: ${session_id}`);
+            } catch (error) {
+                logger.error("Error during final initialization:", error);
+            }
+
+        } catch (error) {
+            console.error("SAM: A fatal error occurred during initialization.", error);
+            logger.error("A fatal error occurred during SAM initialization:", error);
+        }
     });
 })();
 
 })();
-
-// removing all dependencies on TavernHelper being defined before this script runs.
