@@ -34,7 +34,7 @@ function App() {
 
     return (
         <div onClick={() => handleClick()} className="menu_button">
-            Click me
+            Click me to test 
         </div>
     );
 }
