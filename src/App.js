@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import Draggable from 'react-draggable';
 import JSONEditor from 'react-json-editor-ajrm';
 import locale from 'react-json-editor-ajrm/locale/en';
 import {
@@ -7,12 +8,15 @@ import {
 } from './base_var_manager.js';
 import './App.css';
 
+// FIX: Explicitly get TavernHelper from the global window scope.
+// This makes the global variable available within this component's module scope.
+const TavernHelper = window.TavernHelper;
+
 function App() {
     const [samData, setSamData] = useState(null);
     const [jsonData, setJsonData] = useState({});
     const [showInterface, setShowInterface] = useState(false);
 
-    // Fetch data only when the interface is opened
     useEffect(() => {
         if (showInterface) {
             try {
@@ -42,61 +46,60 @@ function App() {
         }
     };
 
-    const handleOpen = () => {
-        setShowInterface(true);
-    };
-
-    const handleClose = () => {
-        setShowInterface(false);
-    };
+    const handleOpen = () => setShowInterface(true);
+    const handleClose = () => setShowInterface(false); // This is our "cancel" action
 
     // If the interface is not shown, only render the button to open it
     if (!showInterface) {
-        return (
-            <div onClick={handleOpen} className="sam_menu_button">
-                Display SAM Interface
-            </div>
-        );
+        return <div onClick={handleOpen} className="sam_menu_button">Display SAM Interface</div>;
     }
 
-    // If the interface is shown, render the modal
+    // If the interface is shown, render the draggable modal
     return (
         <div className="sam_modal_overlay">
-            <div className="sam_app_container">
-                <button onClick={handleClose} className="sam_close_button">X</button>
-
-                <div className="sam_left_panel">
-                    <h3>SAM Data Editor</h3>
-                    <div className="sam_editor_wrapper">
-                        <JSONEditor
-                            id="sam-json-editor"
-                            placeholder={samData}
-                            onChange={handleDataChange}
-                            locale={locale}
-                            height="100%"
-                            width="100%"
-                            theme="dark_vscode_tribute"
-                            colors={{
-                                background: '#1a1a1a',
-                                default: '#ffffff',
-                                string: '#4dbd74',
-                                number: '#63c2de',
-                                colon: '#ffffff',
-                                keys: '#63c2de',
-                                error: '#f86c6b',
-                            }}
-                        />
+            <Draggable handle=".sam_modal_header">
+                <div className="sam_app_container">
+                    {/* This header is the handle for dragging the window */}
+                    <div className="sam_modal_header">
+                        <span className="sam_modal_title">SAM INTERFACE</span>
+                        <button onClick={handleClose} className="sam_close_button">X</button>
                     </div>
-                    <button onClick={handleSaveChanges} className="sam_save_button">
-                        Commit Changes
-                    </button>
-                </div>
 
-                <div className="sam_right_panel">
-                    <h3>Summaries</h3>
-                    <textarea className="sam_summary_input" placeholder="Enter summaries here..."></textarea>
+                    <div className="sam_modal_content">
+                        <div className="sam_left_panel">
+                            <div className="sam_editor_wrapper">
+                                <JSONEditor
+                                    id="sam-json-editor"
+                                    placeholder={samData}
+                                    onChange={handleDataChange}
+                                    locale={locale}
+                                    height="100%"
+                                    width="100%"
+                                    theme="dark_vscode_tribute"
+                                    colors={{
+                                        background: '#1a1a1a',
+                                        default: '#ffffff',
+                                        string: '#4dbd74',
+                                        number: '#63c2de',
+                                        colon: '#ffffff',
+                                        keys: '#63c2de',
+                                        error: '#f86c6b',
+                                    }}
+                                />
+                            </div>
+                        </div>
+
+                        <div className="sam_right_panel">
+                            <textarea className="sam_summary_input" placeholder="Enter summaries here..."></textarea>
+                        </div>
+                    </div>
+
+                    <div className="sam_modal_footer">
+                        <button onClick={handleClose} className="sam_cancel_button">CANCEL</button>
+                        <button onClick={handleSaveChanges} className="sam_save_button">COMMIT CHANGES</button>
+                    </div>
                 </div>
-            </div>
+            </Draggable>
         </div>
     );
 }

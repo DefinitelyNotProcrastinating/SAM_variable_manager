@@ -1,6 +1,6 @@
 {
     "display_name": "SAM_Extension",
-    "loading_order": 99,
+    "loading_order": 999,
     "requires": [],
     "optional": [],
     "js": "dist/index.js",
