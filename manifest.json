@@ -4,7 +4,7 @@
     "requires": [],
     "optional": [],
     "js": "dist/index.js",
-    "css": "",
+    "css": "src/App.css",
     "author": "Cohee1207",
     "version": "1.0.1",
     "homePage": "",
