@@ -1,223 +1,27 @@
 // ============================================================================
 // == Situational Awareness Manager
-// == Version: 4.0.3 "Lepton"
+// == Version: 4.0.5
 // ==
 // == This script provides a robust state management system for SillyTavern.
 // == It now features a revolutionary checkpointing system to significantly
-// == reduce chat history bloat. The full state object ("data block") is no
-// == longer written to every AI response. Instead, it's saved periodically
-// == as a "checkpoint" or on manual user command. Between checkpoints, AI
-// == messages only contain state-mutating commands. The script reconstructs
-// == the full state in memory by applying commands sequentially from the
-// == last checkpoint, optimizing performance for operations like swipes.
+// == reduce chat history bloat.
 // ==
+// == [FIX in 4.0.5] Corrected settings persistence to use the standard 'extension_settings' object.
+// == [NEW in 4.0.4] Event-Driven Architecture. Data loading is deferred until
+// ==                'chat_completion_prompt_ready'.
+// == [NEW in 4.0.4] Logic now gated by World Info entry "__SAM_IDENTIFIER__".
 // == [NEW in 4.0.3] Moved all configuration to a dedicated extension settings file.
 // == [NEW in 4.0.3] Added API functions to get/set individual settings.
 // == [NEW in 4.0.2] Adds persistent enable/disable flag.
-// == [NEW in 4.0.2] Pauses execution on empty chats to prevent errors.
-// == [NEW in 4.0.1] Refactored with external API functions (sam_get_state, etc.)
-// == [NEW in 4.0.0] Checkpointing System
 // ============================================================================
 // ****************************
 // Required plugins: JS-slash-runner by n0vi028
 // ****************************
 
-// Plug and play command reference, paste into prompt:
-/*
-command_syntax:
-  - command: TIME
-    description: Updates the time progression.
-    syntax: '@.TIME("new_datetime_string");'
-    parameters:
-      - name: new_datetime_string
-        type: string
-        description: A string that can be parsed as a Date (e.g., "2024-07-29T10:30:00Z").
-  - command: SET
-    description: Sets a variable at a specified path to a given value.
-    syntax: '@.SET("path.to.var", value);'
-    parameters:
-      - name: path.to.var
-        type: string
-        description: The dot-notation path to the variable in the state object.
-      - name: value
-        type: any
-        description: The new value to assign. Can be a string, number, boolean, null, or a JSON object/array.
-  - command: ADD
-    description: Adds a value. If the target is a number, it performs numeric addition. If the target is a list (array), it appends the value.
-    syntax: '@.ADD("path.to.var", value_to_add);'
-    parameters:
-      - name: path.to.var
-        type: string
-        description: The path to the numeric variable or list.
-      - name: value_to_add
-        type: number | any
-        description: The number to add or the item to append to the list.
-  - command: DEL
-    description: Deletes an item from a list by its numerical index. The item is removed, and the list is compacted.
-    syntax: '@.DEL("path.to.list", index);'
-    parameters:
-      - name: path.to.list
-        type: string
-        description: The path to the list.
-      - name: index
-        type: integer
-        description: The zero-based index of the item to delete.
-  - command: SELECT_SET
-    description: Finds a specific object within a list and sets a property on that object to a new value.
-    syntax: '@.SELECT_SET("path.to.list", "selector_key", "selector_value", "receiver_key", new_value);'
-    parameters:
-      - name: path.to.list
-        type: string
-        description: The path to the list of objects.
-      - name: selector_key
-        type: string
-        description: The property name to search for in each object.
-      - name: selector_value
-        type: any
-        description: The value to match to find the correct object.
-      - name: receiver_key
-        type: string
-        description: The property name on the found object to update.
-      - name: new_value
-        type: any
-        description: The new value to set.
-  - command: SELECT_ADD
-    description: Finds a specific object within a list and adds a value to one of its properties.
-    syntax: '@.SELECT_ADD("path.to.list", "selector_key", "selector_value", "receiver_key", value_to_add);'
-    parameters:
-      - name: path.to.list
-        type: string
-        description: The path to the list of objects.
-      - name: selector_key
-        type: string
-        description: The property name to search for in each object.
-      - name: selector_value
-        type: any
-        description: The value to match to find the correct object.
-      - name: receiver_key
-        type: string
-        description: The property on the found object to add to (must be a number or a list).
-      - name: value_to_add
-        type: any
-        description: The value to add or append.
-  - command: SELECT_DEL
-    description: Finds and completely deletes an object from a list based on a key-value match.
-    syntax: '@.SELECT_DEL("path.to.list", "selector_key", "selector_value");'
-    parameters:
-      - name: path.to.list
-        type: string
-        description: The path to the list of objects.
-      - name: selector_key
-        type: string
-        description: The property name to search for in each object.
-      - name: selector_value
-        type: any
-        description: The value to match to identify the object for deletion.
-  - command: TIMED_SET
-    description: Schedules a variable to be set to a new value in the future, either based on real-world time or in-game rounds.
-    syntax: '@.TIMED_SET("path.to.var", new_value, "reason", is_real_time, timepoint);'
-    parameters:
-      - name: path.to.var
-        type: string
-        description: The dot-notation path to the variable to set.
-      - name: new_value
-        type: any
-        description: The value to set the variable to when the time comes.
-      - name: reason
-        type: string
-        description: A unique identifier for this scheduled event, used for cancellation.
-      - name: is_real_time
-        type: boolean
-        description: If true, `timepoint` is a date string. If false, `timepoint` is a number of rounds from now.
-      - name: timepoint
-        type: string | integer
-        description: The target time. A date string like "2024-10-26T10:00:00Z" if `is_real_time` is true, or a number of rounds (e.g., 5) if false.
-  - command: CANCEL_SET
-    description: Cancels a previously scheduled TIMED_SET command.
-    syntax: '@.CANCEL_SET("identifier");'
-    parameters:
-      - name: identifier
-        type: string | integer
-        description: The `reason` string or the numerical index of the scheduled event in the `state.volatile` array to cancel.
-  - command: RESPONSE_SUMMARY
-    description: Adds a text summary of the current response to the special `state.responseSummary` list.
-    syntax: '@.RESPONSE_SUMMARY("summary_text");'
-    parameters:
-      - name: summary_text
-        type: string
-        description: A concise summary of the AI's response.
-  - command: EVENT_BEGIN
-    description: Starts a new narrative event. Fails if another event is already active.
-    syntax: '@.EVENT_BEGIN("name", "objective", "optional_first_step", ...);'
-    parameters:
-      - name: name
-        type: string
-        description: The name of the event (e.g., "The Council of Elrond").
-      - name: objective
-        type: string
-        description: The goal of the event (e.g., "Decide the fate of the One Ring").
-      - name: '...'
-        type: string
-        description: Optional. One or more strings to add as the first procedural step(s) of the event.
-  - command: EVENT_END
-    description: Concludes the currently active event, setting its status and end time.
-    syntax: '@.EVENT_END(exitCode, "optional_summary");'
-    parameters:
-      - name: exitCode
-        type: integer
-        description: The status code for the event's conclusion (1=success, -1=aborted/failed, other numbers for custom states).
-      - name: optional_summary
-        type: string
-        description: Optional. A final summary of the event's outcome.
-  - command: EVENT_ADD_PROC
-    description: Adds one or more procedural steps to the active event's log.
-    syntax: '@.EVENT_ADD_PROC("step_description_1", "step_description_2", ...);'
-    parameters:
-      - name: '...'
-        type: string
-        description: One or more strings detailing what just happened in the event.
-  - command: EVENT_ADD_DEFN
-    description: Adds a temporary, event-specific definition (like a new item or concept) to the active event.
-    syntax: '@.EVENT_ADD_DEFN("item_name", "item_description");'
-    parameters:
-      - name: item_name
-        type: string
-        description: The name of the new concept (e.g., "Shard of Narsil").
-      - name: item_description
-        type: string
-        description: A brief description of the concept.
-  - command: EVENT_ADD_MEMBER
-    description: Adds one or more members to the list of participants in the active event.
-    syntax: '@.EVENT_ADD_MEMBER("name_1", "name_2", ...);'
-    parameters:
-      - name: '...'
-        type: string
-        description: The names of the characters or entities involved in the event.
-  - command: EVENT_SUMMARY
-    description: Sets or updates the summary for the active event. This can be done before the event ends.
-    syntax: '@.EVENT_SUMMARY("summary_text");'
-    parameters:
-      - name: summary_text
-        type: string
-        description: The summary content.
-  - command: EVAL
-    description: Executes a user-defined function stored in `state.func`. DANGEROUS - use with caution.
-    syntax: '@.EVAL("function_name", param1, param2, ...);'
-    parameters:
-      - name: function_name
-        type: string
-        description: The `func_name` of the function object to execute from the `state.func` array.
-      - name: '...'
-        type: any
-        description: Optional, comma-separated parameters to pass to the function.
-*/
-
-// -------------------------------------------------------------------------------------------
-
 (function () {
     // --- CONFIGURATION ---
     const SCRIPT_NAME = "Situational Awareness Manager";
-    const SCRIPT_VERSION = "4.0.3";
+    const SCRIPT_VERSION = "4.0.5";
     const JSON_REPAIR_URL = "https://cdn.jsdelivr.net/npm/jsonrepair/lib/umd/jsonrepair.min.js";
 
     // NEW: Centralized settings management
@@ -237,11 +41,15 @@ command_syntax:
     const NEW_END_MARKER = '$$$$$$data_block_end$$$$$$';
     const STATE_BLOCK_START_MARKER = NEW_START_MARKER;
     const STATE_BLOCK_END_MARKER = NEW_END_MARKER;
+    
+    // [NEW] Logic Gate Constant
+    const SAM_ACTIVATION_KEY = "__SAM_IDENTIFIER__";
+    const EVENT_PROMPT_READY = 'chat_completion_prompt_ready';
 
-    var { eventSource, event_types } = SillyTavern.getContext();
+    var { eventSource, event_types, extension_settings } = SillyTavern.getContext();
     var _ = require('lodash');
 
-    // Flag to pause execution on empty chats
+    // Flag to pause execution based on World Info presence
     var go_flag = false;
 
     // Regexes for parsing and removing state blocks from messages
@@ -293,29 +101,33 @@ command_syntax:
         }
     };
 
-// NEW: Settings functions using SillyTavern's extension API
+    // [MODIFIED] Corrected settings functions using SillyTavern's standard extension_settings object
     async function loadSamSettings() {
         try {
-            // Use the SillyTavern API to read settings stored under the script's name.
-            const storedSettings = await SillyTavern.getContext().readExtensionSettings(SCRIPT_NAME);
-
-            // Merge the loaded settings with defaults to ensure all keys are present
-            // and to handle cases where new settings are added in script updates.
-            sam_settings = { ...DEFAULT_SETTINGS, ...storedSettings };
-            logger.info("SAM settings loaded successfully.", sam_settings);
+            // Check if settings for this extension already exist in the global settings object
+            if (extension_settings[SCRIPT_NAME]) {
+                const storedSettings = extension_settings[SCRIPT_NAME];
+                // Merge stored settings with defaults to ensure new settings from updates are included
+                sam_settings = { ...DEFAULT_SETTINGS, ...storedSettings };
+                logger.info("SAM settings loaded successfully.", sam_settings);
+            } else {
+                // If no settings exist for this script, create the entry with default values
+                logger.info("No SAM settings found, creating with defaults.");
+                sam_settings = { ...DEFAULT_SETTINGS };
+                extension_settings[SCRIPT_NAME] = { ...sam_settings };
+            }
         } catch (error) {
-            logger.warn("Could not load SAM settings, using defaults. This is normal on first run.", error);
-            // If loading fails (e.g., first time running), we still have the defaults.
-            // Attempt to save them to create the settings file for the next session.
-            await saveSamSettings();
+            logger.warn("Could not load SAM settings, using defaults.", error);
+            // Fallback to default settings in case of any error
+            sam_settings = { ...DEFAULT_SETTINGS };
         }
     }
 
     async function saveSamSettings() {
         try {
-            // Use the SillyTavern API to write the current settings object,
-            // associating it with the script's name.
-            await SillyTavern.getContext().writeExtensionSettings(SCRIPT_NAME, sam_settings);
+            // Directly assign the current settings object to the global settings object.
+            // SillyTavern's framework handles the actual persistence to storage.
+            extension_settings[SCRIPT_NAME] = sam_settings;
             logger.info("SAM settings saved successfully.");
         } catch (error) {
             logger.error("Failed to save SAM settings.", error);
@@ -323,12 +135,23 @@ command_syntax:
         }
     }
 
-    function updateGoFlag() {
-        const chatLength = SillyTavern.getContext().chat?.length ?? 0;
-        const new_flag_state = chatLength > 0;
-        if (go_flag !== new_flag_state) {
-            go_flag = new_flag_state;
-            logger.info(`[SAM] Activity flag set to ${go_flag} (chat length: ${chatLength}). Script is ${go_flag ? 'active' : 'paused'}.`);
+    // [MODIFIED] Replaces updateGoFlag. Checks strictly for World Info entry.
+    async function checkWorldInfoActivation() {
+        try {
+            const wi = await getCurrentWorldbookName();
+            if (wi && Array.isArray(wi)) {
+                // Check if any entry has the magic name
+                const hasIdentifier = wi.some(entry => entry.name === SAM_ACTIVATION_KEY);
+                if (go_flag !== hasIdentifier) {
+                    go_flag = hasIdentifier;
+                    logger.info(`[SAM] Activation Key "${SAM_ACTIVATION_KEY}" ${go_flag ? 'FOUND' : 'MISSING'}. Script is ${go_flag ? 'ACTIVE' : 'DORMANT'}.`);
+                }
+            } else {
+                go_flag = false;
+            }
+        } catch (e) {
+            logger.error("Error checking world info activation:", e);
+            go_flag = false;
         }
     }
 
@@ -344,14 +167,20 @@ command_syntax:
         eventSource.off(event_types.CHAT_CHANGED, oldHandlers.handleChatChanged);
         eventSource.off(event_types.MESSAGE_SENT, oldHandlers.handleMessageSent);
         eventSource.off(event_types.GENERATION_STOPPED, oldHandlers.handleGenerationStopped);
+        
+        // Remove the new listener
+        eventSource.off(EVENT_PROMPT_READY, oldHandlers.handlePromptReady);
+        
         delete window[HANDLER_STORAGE_KEY];
     };
 
     async function getVariables(){
-        if (!SillyTavern.getContext().variables.local.has("SAM_data")){
+        if (!SillyTavern.getContext().variables.local.get("SAM_data")){
             return {};
         }
-        return SillyTavern.getContext().variables.local.get("SAM_data");
+        let data = SillyTavern.getContext().variables.local.get("SAM_data");
+        return data;
+        
     }
 
     async function setAllVariables(newData){
@@ -493,7 +322,6 @@ command_syntax:
         if (match && match[1]) {
             try {
                 const parsed = JSON.parse(match[1].trim());
-                // Configuration flags are no longer part of the state block.
                 return {
                     static: parsed.static ?? {},
                     time: parsed.time ?? "",
@@ -512,13 +340,13 @@ command_syntax:
     }
 
     async function findLatestState(chatHistory, targetIndex = chatHistory.length - 1) {
-        logger.info(`[Lepton] Reconstructing state up to index ${targetIndex}...`);
+        logger.info(`[SAM] Reconstructing state up to index ${targetIndex}...`);
         let baseState = _.cloneDeep(INITIAL_STATE);
         let checkpointIndex = -1;
         if (targetIndex < 0) {
             const baseData = await getBaseDataFromWI();
             if (baseData) {
-                logger.info("[Lepton] Base data from World Info found for new chat. Merging into initial state.");
+                logger.info("[SAM] Base data from World Info found for new chat. Merging into initial state.");
                 baseState = _.merge({}, baseState, baseData);
             }
             return baseState;
@@ -528,18 +356,18 @@ command_syntax:
             if (message.is_user) continue;
             const stateFromBlock = parseStateFromMessage(message.mes);
             if (stateFromBlock) {
-                logger.info(`[Lepton] Found checkpoint at index ${i}.`);
+                logger.info(`[SAM] Found checkpoint at index ${i}.`);
                 baseState = stateFromBlock;
                 checkpointIndex = i;
                 break;
             }
         }
         if (checkpointIndex === -1) {
-            logger.warn("[Lepton] No checkpoint found. Reconstructing from the beginning of AI messages.");
+            logger.warn("[SAM] No checkpoint found. Reconstructing from the beginning of AI messages.");
             if (targetIndex >= 0) {
                 const baseData = await getBaseDataFromWI();
                 if (baseData) {
-                    logger.info("[Lepton] Base data from World Info found. Merging into initial state.");
+                    logger.info("[SAM] Base data from World Info found. Merging into initial state.");
                     baseState = _.merge({}, baseState, baseData);
                 }
             }
@@ -554,9 +382,9 @@ command_syntax:
                 commandsToApply.push(...messageCommands);
             }
         }
-        logger.info(`[Lepton] Found ${commandsToApply.length} commands to apply on top of the base state from index ${checkpointIndex}.`);
+        logger.info(`[SAM] Found ${commandsToApply.length} commands to apply on top of the base state from index ${checkpointIndex}.`);
         const reconstructedState = await applyCommandsToState(commandsToApply, baseState);
-        logger.info(`[Lepton] State reconstruction complete up to index ${targetIndex}.`);
+        logger.info(`[SAM] State reconstruction complete up to index ${targetIndex}.`);
         return reconstructedState;
     }
 
@@ -599,7 +427,7 @@ command_syntax:
             return {};
         }
         let winame = SillyTavern.getContext().characters[index].data.extensions.world
-        let wi = await loadWorldInfo(winame);
+        let wi = SillyTavern.getContext().loadWorldInfo(winame);
         return wi
     }
 
@@ -1036,7 +864,7 @@ command_syntax:
             const shouldCheckpoint = sam_settings.enable_auto_checkpoint && sam_settings.checkpoint_frequency > 0 &&
                                      (currentRound > 0 && (currentRound % sam_settings.checkpoint_frequency === 0 || index === 0));
             if (shouldCheckpoint) {
-                logger.info(`[Lepton] Checkpoint condition met (Round ${currentRound}). Writing full state block.`);
+                logger.info(`[SAM] Checkpoint condition met (Round ${currentRound}). Writing full state block.`);
                 const newStateBlock = await chunkedStringify(newState);
                 finalContent += `\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
             }
@@ -1075,8 +903,7 @@ command_syntax:
 
     async function sync_latest_state() {
         if (!go_flag) {
-            logger.info("[Sync] Sync skipped, chat is empty. Loading initial state.");
-            await loadStateToMemory(-1);
+            logger.info("[Sync] Sync skipped, script is dormant (No Identifier).");
             return;
         }
         var lastlastAIMessageIdx = await findLastAiMessageAndIndex();
@@ -1084,9 +911,11 @@ command_syntax:
     }
 
     async function dispatcher(event, ...event_params) {
-        if (!go_flag && event !== event_types.CHAT_CHANGED && event !== event_types.MESSAGE_SENT) {
+        // [MODIFIED] Dispatcher only reacts if go_flag is true, except for the ready check
+        if (!go_flag && event !== EVENT_PROMPT_READY) {
             return;
         }
+
         if (!dispatcher.deviceLogged) {
             logger.info(`[SAM] Perf Settings - Delay: ${DELAY_MS}ms, Batch: ${COMMAND_BATCH_SIZE}`);
             dispatcher.deviceLogged = true;
@@ -1095,25 +924,35 @@ command_syntax:
             switch (curr_state) {
                 case STATES.IDLE:
                     switch (event) {
+                        case EVENT_PROMPT_READY:
+                            // State loading happens in the handler itself for this event,
+                            // we just need to ensure we transition correctly for the generation.
+                            curr_state = STATES.AWAIT_GENERATION;
+                            startGenerationWatcher();
+                            break;
+                            
+                        // Fallback logic for regenerations/swipes which might bypass prompt_ready in some flows
                         case event_types.MESSAGE_SENT:
                         case event_types.GENERATION_STARTED:
                             if (event_params[2]) { return; }
                             if (event_params[0] === "swipe" || event_params[0] === "regenerate") {
                                 await loadStateToMemory(findLatestUserMsgIndex());
                                 prevState = goodCopy((await getVariables()).SAM_data);
-                            } else if (event === event_types.MESSAGE_SENT) {
-                                const lastAiIndex = await findLastAiMessageAndIndex();
-                                prevState = await loadStateToMemory(lastAiIndex);
-                            }
+                            } 
                             curr_state = STATES.AWAIT_GENERATION;
                             startGenerationWatcher();
                             break;
                         case event_types.MESSAGE_SWIPED:
                         case event_types.MESSAGE_DELETED:
                         case event_types.MESSAGE_EDITED:
-                        case event_types.CHAT_CHANGED:
                             await sync_latest_state();
                             prevState = goodCopy((await getVariables()).SAM_data);
+                            break;
+                        case event_types.CHAT_CHANGED:
+                            // Reset everything on chat change
+                            go_flag = false;
+                            prevState = null;
+                            logger.info("[SAM] Chat changed. Resetting to dormant state.");
                             break;
                     }
                     break;
@@ -1131,8 +970,8 @@ command_syntax:
                             break;
                         case event_types.CHAT_CHANGED:
                             stopGenerationWatcher();
-                            await sync_latest_state();
-                            prevState = goodCopy((await getVariables()).SAM_data);
+                            go_flag = false;
+                            prevState = null;
                             curr_state = STATES.IDLE;
                             break;
                     }
@@ -1184,13 +1023,25 @@ command_syntax:
     }
 
     const handlers = {
+        // [NEW] The critical handler that gates execution
+        handlePromptReady: async () => {
+            logger.info("[SAM] Prompt Ready Event Detected. Checking activation...");
+            await checkWorldInfoActivation();
+            if (go_flag) {
+                logger.info("[SAM] Identifier found. Syncing state from history before generation...");
+                await sync_latest_state();
+                prevState = goodCopy((await getVariables()).SAM_data);
+                // Trigger dispatcher to shift state to AWAIT_GENERATION
+                await unifiedEventHandler(EVENT_PROMPT_READY);
+            }
+        },
 		handleGenerationStarted: async (ev, options, dry_run) => { await unifiedEventHandler(event_types.GENERATION_STARTED, ev, options, dry_run); },
 		handleGenerationEnded: async () => { await unifiedEventHandler(event_types.GENERATION_ENDED); },
 		handleMessageSwiped: () => { setTimeout(async () => { await unifiedEventHandler(event_types.MESSAGE_SWIPED); }, 0); },
 		handleMessageDeleted: (message) => { setTimeout(async () => { await unifiedEventHandler(event_types.MESSAGE_DELETED, message); }, 0); },
 		handleMessageEdited: () => { setTimeout(async () => { await unifiedEventHandler(event_types.MESSAGE_EDITED); }, 0); },
-		handleChatChanged: () => { setTimeout(async () => { updateGoFlag(); await unifiedEventHandler(event_types.CHAT_CHANGED); }, 10); },
-		handleMessageSent: () => { setTimeout(async () => { updateGoFlag(); await unifiedEventHandler(event_types.MESSAGE_SENT); }, 0); },
+		handleChatChanged: () => { setTimeout(async () => { await unifiedEventHandler(event_types.CHAT_CHANGED); }, 10); },
+		handleMessageSent: () => { setTimeout(async () => { await unifiedEventHandler(event_types.MESSAGE_SENT); }, 0); },
 		handleGenerationStopped: () => { setTimeout(async () => { await unifiedEventHandler(event_types.GENERATION_STOPPED); }, 0); },
 	};
 
@@ -1202,8 +1053,14 @@ command_syntax:
         isCheckpointing = false;
         event_queue.length = 0;
         prevState = null;
-        sync_latest_state().then(() => toastr.success("SAM state has been reset and re-synced."))
-            .catch(err => toastr.error("SAM state reset, but re-sync failed."));
+        // In the new logic, we re-check logic gate on reset
+        checkWorldInfoActivation().then(() => {
+            if(go_flag) {
+                sync_latest_state().then(() => toastr.success("SAM state has been reset and re-synced."));
+            } else {
+                 toastr.info("SAM state reset. Logic dormant (No identifier).");
+            }
+        });
     }
 
     async function manualCheckpoint() {
@@ -1281,7 +1138,7 @@ command_syntax:
     async function sam_get_data() {
         try {
             const variables = await getVariables();
-            return variables.SAM_data;
+            return variables;
         } catch (error) {
             logger.error("[External API] Failed to get SAM_data from variables.", error);
             return null;
@@ -1386,17 +1243,10 @@ command_syntax:
                 }
 
                 cleanupPreviousInstance();
-                const initializeOrReloadStateForCurrentChat = async () => {
-                    updateGoFlag();
-                    if (!go_flag) {
-                        await loadStateToMemory(-1);
-                    } else {
-                        const lastAiIndex = await findLastAiMessageAndIndex();
-                        await loadStateToMemory(lastAiIndex);
-                    }
-                    prevState = goodCopy((await getVariables()).SAM_data);
-                    logger.info("Initialization finalized, prevState primed.");
-                };
+                
+                // [MODIFIED] Immediate loading logic REMOVED.
+                // We now strictly wait for events to trigger data loading.
+                logger.info("SAM: Event listeners registered. Waiting for prompt ready event or activation key.");
 
                 eventSource.makeFirst(event_types.GENERATION_STARTED, handlers.handleGenerationStarted);
                 eventSource.on(event_types.GENERATION_ENDED, handlers.handleGenerationEnded);
@@ -1406,10 +1256,13 @@ command_syntax:
                 eventSource.on(event_types.CHAT_CHANGED, handlers.handleChatChanged);
                 eventSource.on(event_types.MESSAGE_SENT, handlers.handleMessageSent);
                 eventSource.on(event_types.GENERATION_STOPPED, handlers.handleGenerationStopped);
+                
+                // [NEW] The specific event requested
+                eventSource.on(EVENT_PROMPT_READY, handlers.handlePromptReady);
+                
                 window[HANDLER_STORAGE_KEY] = handlers;
                 
-                logger.info(`V${SCRIPT_VERSION} loaded. GLHF, player.`);
-                await initializeOrReloadStateForCurrentChat();
+                logger.info(`V${SCRIPT_VERSION} loaded. Event Driven Mode.`);
                 session_id = JSON.stringify(new Date());
                 sessionStorage.setItem(SESSION_STORAGE_KEY, session_id);
 
