@@ -50,7 +50,6 @@
     
     // [NEW] Logic Gate Constant
     const SAM_ACTIVATION_KEY = "__SAM_IDENTIFIER__";
-    const EVENT_PROMPT_READY = 'chat_completion_prompt_ready';
     const MODULE_NAME = 'sam_extension';
 
 
@@ -199,7 +198,7 @@
         eventSource.off(event_types.GENERATION_STOPPED, oldHandlers.handleGenerationStopped);
         
         // Remove the new listener
-        eventSource.off(EVENT_PROMPT_READY, oldHandlers.handlePromptReady);
+        eventSource.off(event_types.CHAT_COMPLETION_PROMPT_READY, oldHandlers.handlePromptReady);
         
         delete window[HANDLER_STORAGE_KEY];
     };
@@ -942,7 +941,7 @@
 
     async function dispatcher(event, ...event_params) {
         // [MODIFIED] Dispatcher only reacts if go_flag is true, except for the ready check
-        if (!go_flag && event !== EVENT_PROMPT_READY) {
+        if (!go_flag && event !== event_types.CHAT_COMPLETION_PROMPT_READY) {
             return;
         }
 
@@ -954,7 +953,7 @@
             switch (curr_state) {
                 case STATES.IDLE:
                     switch (event) {
-                        case EVENT_PROMPT_READY:
+                        case event_types.CHAT_COMPLETION_PROMPT_READY:
                             // State loading happens in the handler itself for this event,
                             // we just need to ensure we transition correctly for the generation.
                             curr_state = STATES.AWAIT_GENERATION;
@@ -1062,7 +1061,7 @@
                 await sync_latest_state();
                 prevState = goodCopy((await getVariables()).SAM_data);
                 // Trigger dispatcher to shift state to AWAIT_GENERATION
-                await unifiedEventHandler(EVENT_PROMPT_READY);
+                await unifiedEventHandler(event_types.CHAT_COMPLETION_PROMPT_READY);
             }
         },
 		handleGenerationStarted: async (ev, options, dry_run) => { await unifiedEventHandler(event_types.GENERATION_STARTED, ev, options, dry_run); },
@@ -1237,6 +1236,10 @@
             logger.error(`[SAM] failed to save extension settings.`, error);
         }
     }
+
+    function sam_is_in_use(){
+        return go_flag;
+    }
     
     function sam_get_settings() {
         return loadSamSettings();
@@ -1249,6 +1252,7 @@
         sam_abort_cycle,
         sam_enable,
         sam_disable,
+        sam_is_in_use,
         sam_set_setting,
         sam_get_settings,
     };
@@ -1279,7 +1283,7 @@
                 eventSource.on(event_types.GENERATION_STOPPED, handlers.handleGenerationStopped);
                 
                 // [NEW] The specific event requested
-                eventSource.on(EVENT_PROMPT_READY, handlers.handlePromptReady);
+                eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, handlers.handlePromptReady);
                 
                 window[HANDLER_STORAGE_KEY] = handlers;
                 

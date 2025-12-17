@@ -46,6 +46,7 @@
     color: #ddd;
     border-radius: 4px;
     overflow: hidden;
+    transition: height 0.3s ease-in-out; /* Added smooth transition for resize */
 }
 
 /* Header */
@@ -158,6 +159,7 @@
     padding: 10px;
     font-family: monospace;
     resize: none;
+    min-height: 150px; /* Ensure it has a minimum height */
 }
 
 /* Function Editor Layout */
@@ -288,6 +290,9 @@
 }
 
 .sam_status_bar { font-size: 11px; color: #666; }
+.sam_status_bar .busy { color: #f0ad4e; }
+.sam_status_bar .idle { color: #5cb85c; }
+
 
 .sam_actions { display: flex; gap: 10px; }
 
@@ -303,3 +308,50 @@
 
 .sam_btn_primary { background: #0e639c; color: white; }
 .sam_btn_primary:hover { background: #1177bb; }
+
+
+/* --- NEW/UPDATED STYLES FOR SUMMARY PANEL --- */
+.full_height {
+    height: 100%;
+    box-sizing: border-box;
+}
+.layout_column {
+    display: flex;
+    flex-direction: column;
+}
+.sam_summary_settings_section {
+    padding-bottom: 15px;
+}
+.sam_section_title {
+    font-size: 14px;
+    color: #ccc;
+    border-bottom: 1px solid #333;
+    padding-bottom: 8px;
+    margin-bottom: 15px;
+}
+.sam_divider {
+    border: none;
+    border-top: 1px solid #333;
+    margin: 15px 0;
+}
+.sam_textarea_medium {
+    background: #151515;
+    color: #ccc;
+    border: 1px solid #333;
+    padding: 10px;
+    font-family: monospace;
+    height: 100px;
+    resize: vertical;
+}
+.sam_inline_input {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+}
+.sam_inline_input .sam_label {
+    margin-bottom: 0;
+    white-space: nowrap;
+}
+.small_input {
+    width: 60px !important;
+}

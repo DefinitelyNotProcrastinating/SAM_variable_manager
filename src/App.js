@@ -1,4 +1,5 @@
-import React, { useState, useEffect, useCallback } from 'react';
+import React, { useState, useEffect, useCallback, useRef } from 'react';
+import ReactDOM from 'react-dom';
 import Draggable from 'react-draggable';
 import JSONEditor from 'react-json-editor-ajrm';
 import locale from 'react-json-editor-ajrm/locale/en';
@@ -7,11 +8,13 @@ import {
     sam_set_data,
     sam_get_settings,
     sam_set_setting,
+    sam_is_in_use,
     sam_get_state,
 } from './base_var_manager.js';
 import './App.css';
 
 // --- Helper Components (No changes needed here) ---
+var { eventSource, event_types } = SillyTavern.getContext();
 
 const ToggleSwitch = ({ label, value, onChange }) => (
     <div className="sam_form_row">
@@ -38,11 +41,28 @@ const InputRow = ({ label, type = "text", value, onChange, placeholder }) => (
 );
 
 
-// --- Sub-Panels (No changes needed here, they will receive the draft state as props) ---
+// --- Sub-Panels ---
 
 const SettingsPanel = ({ settings, setSettings }) => {
     const handleChange = (key, val) => {
         setSettings(prev => ({ ...prev, [key]: val }));
+    };
+
+    const handleSaveSettings = async () => {
+        try {
+            // Filter out summary-specific settings, as they are saved elsewhere
+            const generalSettings = { ...settings };
+            delete generalSettings.summary_frequency;
+            delete generalSettings.summary_prompt;
+
+            for (const key of Object.keys(generalSettings)) {
+                await sam_set_setting(key, generalSettings[key]);
+            }
+            alert("General settings saved successfully.");
+        } catch (e) {
+            console.error(e);
+            alert("Error saving general settings: " + e.message);
+        }
     };
 
     return (
@@ -78,6 +98,9 @@ const SettingsPanel = ({ settings, setSettings }) => {
                     onChange={(v) => handleChange('checkpoint_frequency', v)}
                 />
             )}
+            <div className="sam_actions" style={{ marginTop: '20px' }}>
+                <button onClick={handleSaveSettings} className="sam_btn sam_btn_primary">Save General Settings</button>
+            </div>
         </div>
     );
 };
@@ -165,7 +188,7 @@ const FunctionEditor = ({ functions, setFunctions }) => {
                                 value={selectedFunc.timeout}
                                 onChange={(v) => updateFunc(selectedIndex, 'timeout', v)}
                             />
-                            <div className="sam_form_row">
+                             <div className="sam_form_row">
                                 <label className="sam_label">Exec Order</label>
                                 <select
                                     className="sam_select"
@@ -178,7 +201,7 @@ const FunctionEditor = ({ functions, setFunctions }) => {
                                 </select>
                             </div>
                         </div>
-                        <div className="sam_form_grid">
+                         <div className="sam_form_grid">
                             <ToggleSwitch
                                 label="Periodic Eval"
                                 value={selectedFunc.periodic}
@@ -205,66 +228,88 @@ const FunctionEditor = ({ functions, setFunctions }) => {
 function App() {
     const [showInterface, setShowInterface] = useState(false);
     const [activeTab, setActiveTab] = useState('DATA');
-
-    // ** MODIFICATION: Introduce 'draft' states for UI editing **
     const [draftSamData, setDraftSamData] = useState({});
     const [draftSamSettings, setDraftSamSettings] = useState({});
-    
-    // ** MODIFICATION: 'live' state for background refresh **
-    const [liveSamData, setLiveSamData] = useState({}); // Only used for background refresh and status
+    const [liveSamData, setLiveSamData] = useState({});
     const [summaries, setSummaries] = useState("");
-
     const [isDataReady, setIsDataReady] = useState(false);
     const [isBusy, setIsBusy] = useState(false);
     const [samStatusText, setSamStatusText] = useState("IDLE");
+    const [portalContainer, setPortalContainer] = useState(null);
+    const nodeRef = useRef(null);
 
-    // ** MODIFICATION: This function now populates BOTH draft and live states on initial load **
-    const loadInitialData = useCallback(async (showAlerts = false) => {
-        try {
-            var rawData = await sam_get_data();
-            if (!rawData) {
-                rawData = {};
-            }
-
-            // Initialize structure if empty
+    const refreshDataAndSummary = useCallback(async () => {
+        const rawData = await sam_get_data();
+        if (rawData) {
             if (!rawData.static) rawData.static = {};
             if (!rawData.func) rawData.func = [];
             if (!rawData.responseSummary) rawData.responseSummary = [];
-
-            // Set both live and draft states to the same initial data
             setLiveSamData(rawData);
             setDraftSamData(rawData);
             setSummaries(rawData.responseSummary.join('\n'));
+        }
+    }, []);
 
-            const settings = await sam_get_settings();
-            // Settings are simple, only need a draft version for editing
-            setDraftSamSettings(settings);
-
-            if (!isDataReady) {
-                setIsDataReady(true);
+    // Effect to listen for prompt-ready event and refresh data
+    useEffect(() => {
+        const handlePromptReady = () => {
+            console.log("ATTEMPTING TO REFRESH due to SAM CARD SWITCH ");
+            if (sam_is_in_use()) {
+                refreshDataAndSummary();
             }
+            console.log("REFRESH COMPLETED");
+        };
+        eventSource = SillyTavern.getContext().eventSource;
+        event_types = SillyTavern.getContext().eventTypes;
+
+
+        if (eventSource && event_types) {
+            eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, handlePromptReady);
+        }
+
+        return () => {
+            if (eventSource && event_types && (!sam_is_in_use())) {
+                eventSource.off(event_types.CHAT_COMPLETION_PROMPT_READY, handlePromptReady);
+            }
+        };
+    }, [refreshDataAndSummary]);
+
+
+    useEffect(() => {
+        const container = document.createElement('div');
+        container.id = 'sam-portal-root';
+        document.body.appendChild(container);
+        setPortalContainer(container);
+
+        return () => {
+            if (container.parentNode) {
+                container.parentNode.removeChild(container);
+            }
+        };
+    }, []);
+
+    const loadInitialData = useCallback(async (showAlerts = false) => {
+        try {
+            await refreshDataAndSummary();
+            const settings = await sam_get_settings();
+            setDraftSamSettings(settings || {});
+
+            if (!isDataReady) setIsDataReady(true);
         } catch (e) {
             console.error("SAM UI Error during initial load:", e);
-            if (showAlerts) {
-                alert("Failed to load SAM data/settings.");
-            }
+            if (showAlerts) alert("Failed to load SAM data/settings.");
         }
-    }, [isDataReady]);
+    }, [isDataReady, refreshDataAndSummary]);
 
-    // ** MODIFICATION: The refresh button's action **
-    // Discards changes and re-syncs the UI with the latest live data.
     const handleRefresh = () => {
         if (window.confirm("Are you sure you want to refresh? This will discard any unsaved changes.")) {
              setDraftSamData(liveSamData);
              setSummaries(liveSamData.responseSummary.join('\n'));
-             // Re-fetch settings as well
              sam_get_settings().then(setDraftSamSettings);
              alert("UI has been refreshed with the latest saved data.");
         }
     };
 
-
-    // Initial load when UI is opened
     useEffect(() => {
         if (showInterface) {
             loadInitialData(true);
@@ -274,11 +319,8 @@ function App() {
         }
     }, [showInterface, loadInitialData]);
 
-    // Periodic refresh logic - **ONLY UPDATES STATUS and LIVE DATA**
     useEffect(() => {
-        if (!showInterface || !isDataReady) {
-            return;
-        }
+        if (!showInterface || !isDataReady) return;
 
         const intervalId = setInterval(async () => {
             try {
@@ -289,12 +331,9 @@ function App() {
                 setIsBusy(isCurrentlyBusy);
                 setSamStatusText(currentState);
 
-                // ** MODIFICATION: Only refresh live data if not busy, does NOT touch the UI (draft) state **
                 if (!isCurrentlyBusy) {
                     const rawData = await sam_get_data();
-                    if(rawData) {
-                       setLiveSamData(rawData);
-                    }
+                    if(rawData) setLiveSamData(rawData);
                 }
             } catch (e) {
                 console.error("SAM UI periodic refresh failed:", e);
@@ -303,15 +342,17 @@ function App() {
         }, 2000);
 
         return () => clearInterval(intervalId);
-
     }, [showInterface, isDataReady]);
 
-    // ** MODIFICATION: These handlers now update the DRAFT state **
     const handleSummaryChange = (e) => {
         const val = e.target.value;
         setSummaries(val);
         const arr = val.split('\n').filter(line => line.trim() !== "");
         setDraftSamData(prev => ({ ...prev, responseSummary: arr }));
+    };
+    
+    const handleSettingsChange = (key, val) => {
+        setDraftSamSettings(prev => ({...prev, [key]: val}));
     };
 
     const handleJsonChange = (content) => {
@@ -319,20 +360,22 @@ function App() {
             setDraftSamData(content.jsObject);
         }
     };
-
-    // ** MODIFICATION: Commit logic now pushes the DRAFT state **
-    const handleCommit = async () => {
+    
+    const handleSaveSummarySettings = async () => {
         try {
-            // Save Settings from draft state
-            for (const key of Object.keys(draftSamSettings)) {
-                await sam_set_setting(key, draftSamSettings[key]);
-            }
+            await sam_set_setting('summary_frequency', draftSamSettings.summary_frequency);
+            await sam_set_setting('summary_prompt', draftSamSettings.summary_prompt);
+            alert("Summary settings saved successfully.");
+        } catch (e) {
+             console.error(e);
+            alert("Error saving summary settings: " + e.message);
+        }
+    };
 
-            // Save Data from draft state
+    const handleCommitData = async () => {
+        try {
             await sam_set_data(draftSamData);
-
-            alert("SAM configuration saved successfully.");
-            // After successful commit, re-sync the live state with the new data.
+            alert("SAM data and summaries saved successfully.");
             setLiveSamData(draftSamData);
             setShowInterface(false);
         } catch (e) {
@@ -341,20 +384,10 @@ function App() {
         }
     };
 
-    if (!showInterface) {
-        return (
-            <div className="sam_trigger_wrapper">
-                <button onClick={() => setShowInterface(true)} className="sam_menu_button">
-                    SAM 4.0 Config
-                </button>
-            </div>
-        );
-    }
-
-    return (
+    const modalContent = (
         <div className="sam_modal_overlay">
-            <Draggable handle=".sam_modal_header" bounds="parent">
-                <div className="sam_app_window">
+            <Draggable handle=".sam_modal_header" nodeRef={nodeRef}>
+                <div className="sam_app_window" ref={nodeRef} style={activeTab === 'SUMMARY' ? { height: '100vh' } : {}}>
                     <div className="sam_modal_header">
                         <div className="sam_header_title">
                             <span className="sam_brand">SAM</span> MANAGER
@@ -365,7 +398,10 @@ function App() {
 
                     <div className="sam_tabs">
                         <button className={`sam_tab ${activeTab === 'DATA' ? 'active' : ''}`} onClick={() => setActiveTab('DATA')}>
-                            Data & Summary
+                            Data
+                        </button>
+                        <button className={`sam_tab ${activeTab === 'SUMMARY' ? 'active' : ''}`} onClick={() => setActiveTab('SUMMARY')}>
+                            Summary
                         </button>
                         <button className={`sam_tab ${activeTab === 'FUNCS' ? 'active' : ''}`} onClick={() => setActiveTab('FUNCS')}>
                             Functions
@@ -377,51 +413,73 @@ function App() {
 
                     <div className="sam_content_area">
                         {activeTab === 'DATA' && (
-                            <div className="sam_panel_split">
-                                <div className={`sam_half_panel ${isBusy ? 'disabled' : ''}`}>
-                                    <h4 className="sam_panel_label">Raw JSON State {isBusy ? "(Locked during generation)" : ""}</h4>
-                                    <div className="sam_json_wrapper">
-                                        {isDataReady ? (
-                                            <JSONEditor
-                                                id="sam_json_edit"
-                                                // ** MODIFICATION: Bind to draft data **
-                                                placeholder={draftSamData}
-                                                onChange={handleJsonChange}
-                                                locale={locale}
-                                                theme="dark_vscode_tribute"
-                                                height="100%"
-                                                width="100%"
-                                                colors={{ background: 'transparent' }}
-                                                viewOnly={isBusy}
-                                            />
-                                        ) : (
-                                            <div className="sam_empty_state">Loading data...</div>
-                                        )}
-                                    </div>
-                                </div>
-                                <div className="sam_half_panel">
-                                    <h4 className="sam_panel_label">Response Summaries</h4>
-                                    <textarea
-                                        className="sam_textarea_full"
-                                        value={summaries}
-                                        onChange={handleSummaryChange}
-                                        placeholder="One summary per line..."
-                                    />
+                            <div className={`sam_panel_content ${isBusy ? 'disabled' : ''}`}>
+                                <h4 className="sam_panel_label">Raw JSON State {isBusy ? "(Locked during generation)" : ""}</h4>
+                                <div className="sam_json_wrapper">
+                                    {isDataReady ? (
+                                        <JSONEditor
+                                            id="sam_json_edit"
+                                            placeholder={draftSamData}
+                                            onChange={handleJsonChange}
+                                            locale={locale}
+                                            theme="dark_vscode_tribute"
+                                            height="100%"
+                                            width="100%"
+                                            colors={{ background: 'transparent' }}
+                                            viewOnly={isBusy}
+                                        />
+                                    ) : (
+                                        <div className="sam_empty_state">Loading data...</div>
+                                    )}
                                 </div>
                             </div>
                         )}
-
+                        {activeTab === 'SUMMARY' && (
+                            <div className="sam_panel_content full_height layout_column">
+                                <div className="sam_summary_settings_section">
+                                    <h3 className="sam_section_title">Summary Generation Settings</h3>
+                                    <div className="sam_form_row sam_inline_input">
+                                         <label className="sam_label">Summary Frequency: once per</label>
+                                         <input
+                                            type="number"
+                                            className="sam_input small_input"
+                                            value={draftSamSettings.summary_frequency || ''}
+                                            onChange={(e) => handleSettingsChange('summary_frequency', Number(e.target.value))}
+                                            placeholder="5"
+                                        />
+                                        <label className="sam_label">responses</label>
+                                    </div>
+                                     <div className="sam_form_column">
+                                        <label className="sam_label">Summary Prompt</label>
+                                        <textarea
+                                            className="sam_textarea_medium"
+                                            value={draftSamSettings.summary_prompt || ''}
+                                            onChange={(e) => handleSettingsChange('summary_prompt', e.target.value)}
+                                            placeholder="Enter the prompt for generating summaries..."
+                                        />
+                                    </div>
+                                    <div className="sam_actions">
+                                        <button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary">Save Summary Settings</button>
+                                    </div>
+                                </div>
+                                <hr className="sam_divider" />
+                                 <h4 className="sam_panel_label">Saved Response Summaries</h4>
+                                <textarea
+                                    className="sam_textarea_full"
+                                    value={summaries}
+                                    onChange={handleSummaryChange}
+                                    placeholder="One summary per line..."
+                                />
+                            </div>
+                        )}
                         {activeTab === 'FUNCS' && (
                             <FunctionEditor
-                                // ** MODIFICATION: Bind to draft data **
                                 functions={draftSamData.func || []}
                                 setFunctions={(newFuncs) => setDraftSamData(prev => ({ ...prev, func: newFuncs }))}
                             />
                         )}
-
                         {activeTab === 'SETTINGS' && (
                             <SettingsPanel
-                                // ** MODIFICATION: Bind to draft settings **
                                 settings={draftSamSettings}
                                 setSettings={setDraftSamSettings}
                             />
@@ -430,19 +488,28 @@ function App() {
 
                     <div className="sam_modal_footer">
                         <div className="sam_status_bar">
-                            {/* ** MODIFICATION: Use draft settings for the enabled/disabled text ** */}
                             Status: {draftSamSettings.enabled ? "Active" : "Disabled"} | State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span>
                         </div>
                         <div className="sam_actions">
-                            {/* ** MODIFICATION: Refresh button now has a dedicated handler ** */}
-                            <button onClick={handleRefresh} className="sam_btn sam_btn_secondary">Refresh</button>
+                            <button onClick={handleRefresh} className="sam_btn sam_btn_secondary">Refresh UI</button>
                             <button onClick={() => setShowInterface(false)} className="sam_btn sam_btn_secondary">Cancel</button>
-                            <button onClick={handleCommit} className="sam_btn sam_btn_primary">Commit Changes</button>
+                            <button onClick={handleCommitData} className="sam_btn sam_btn_primary">Commit Data Changes</button>
                         </div>
                     </div>
                 </div>
             </Draggable>
         </div>
+    );
+
+    return (
+        <>
+            <div className="sam_trigger_wrapper">
+                <button onClick={() => setShowInterface(true)} className="sam_menu_button">
+                    SAM 4.0 Config
+                </button>
+            </div>
+            {showInterface && portalContainer && ReactDOM.createPortal(modalContent, portalContainer)}
+        </>
     );
 }
 
