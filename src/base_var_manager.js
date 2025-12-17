@@ -25,13 +25,19 @@
     const JSON_REPAIR_URL = "https://cdn.jsdelivr.net/npm/jsonrepair/lib/umd/jsonrepair.min.js";
 
     // NEW: Centralized settings management
-    const DEFAULT_SETTINGS = {
+
+
+    const DEFAULT_SETTINGS = Object.freeze({
         enabled: true,
         disable_dtype_mutation: false,
         uniquely_identified: false,
         enable_auto_checkpoint: true,
         checkpoint_frequency: 20
-    };
+    });
+
+    
+
+
     let sam_settings = { ...DEFAULT_SETTINGS };
 
     // State block format markers
@@ -45,8 +51,10 @@
     // [NEW] Logic Gate Constant
     const SAM_ACTIVATION_KEY = "__SAM_IDENTIFIER__";
     const EVENT_PROMPT_READY = 'chat_completion_prompt_ready';
+    const MODULE_NAME = 'sam_extension';
 
-    var { eventSource, event_types, extension_settings } = SillyTavern.getContext();
+
+    var { eventSource, event_types, extensionSettings,saveSettingsDebounced } = SillyTavern.getContext();
     var _ = require('lodash');
 
     // Flag to pause execution based on World Info presence
@@ -101,39 +109,61 @@
         }
     };
 
-    // [MODIFIED] Corrected settings functions using SillyTavern's standard extension_settings object
-    async function loadSamSettings() {
-        try {
-            // Check if settings for this extension already exist in the global settings object
-            if (extension_settings[SCRIPT_NAME]) {
-                const storedSettings = extension_settings[SCRIPT_NAME];
-                // Merge stored settings with defaults to ensure new settings from updates are included
-                sam_settings = { ...DEFAULT_SETTINGS, ...storedSettings };
-                logger.info("SAM settings loaded successfully.", sam_settings);
-            } else {
-                // If no settings exist for this script, create the entry with default values
-                logger.info("No SAM settings found, creating with defaults.");
-                sam_settings = { ...DEFAULT_SETTINGS };
-                extension_settings[SCRIPT_NAME] = { ...sam_settings };
-            }
-        } catch (error) {
-            logger.warn("Could not load SAM settings, using defaults.", error);
-            // Fallback to default settings in case of any error
-            sam_settings = { ...DEFAULT_SETTINGS };
+
+    function loadSamSettings() {
+        // Initialize settings if they don't exist
+        if (!extensionSettings[MODULE_NAME]) {
+            extensionSettings[MODULE_NAME] = structuredClone(DEFAULT_SETTINGS);
         }
+
+        // Ensure all default keys exist (helpful after updates)
+        for (const key of Object.keys(DEFAULT_SETTINGS)) {
+            if (!Object.hasOwn(extensionSettings[MODULE_NAME], key)) {
+                extensionSettings[MODULE_NAME][key] = DEFAULT_SETTINGS[key];
+            }
+        }
+
+        return extensionSettings[MODULE_NAME];
     }
 
-    async function saveSamSettings() {
+
+    async function saveSamSettings(new_settings_json) {
         try {
             // Directly assign the current settings object to the global settings object.
             // SillyTavern's framework handles the actual persistence to storage.
-            extension_settings[SCRIPT_NAME] = sam_settings;
+            const settings = loadSamSettings();
+
+            settings = new_settings_json;
+            saveSettingsDebounced();
+
             logger.info("SAM settings saved successfully.");
         } catch (error) {
             logger.error("Failed to save SAM settings.", error);
             toastr.error("Failed to save SAM settings.");
         }
     }
+    async function saveSamSettings(key, value){
+        try {
+            // Directly assign the current settings object to the global settings object.
+            // SillyTavern's framework handles the actual persistence to storage.
+            var settings = loadSamSettings();
+
+            settings[key] = value;
+            saveSettingsDebounced();
+
+            logger.info("SAM settings saved successfully.");
+        } catch (error) {
+            logger.error("Failed to save SAM settings.", error);
+            toastr.error("Failed to save SAM settings.");
+        }
+    }
+
+
+
+
+
+
+
 
     // [MODIFIED] Replaces updateGoFlag. Checks strictly for World Info entry.
     async function checkWorldInfoActivation() {
@@ -314,7 +344,7 @@
         }, WATCHER_INTERVAL_MS);
     }
     
-    async function getRoundCounter() { return SillyTavern.chat.length - 1; }
+    async function getRoundCounter() { return SillyTavern.getContext().chat.length - 1; }
     
     function parseStateFromMessage(messageContent) {
         if (!messageContent) return null;
@@ -389,8 +419,8 @@
     }
 
     function findLatestUserMsgIndex() {
-        for (let i = SillyTavern.chat.length - 1; i >= 0; i--) {
-            if (SillyTavern.chat[i].is_user) { return i; }
+        for (let i = SillyTavern.getContext().chat.length - 1; i >= 0; i--) {
+            if (SillyTavern.getContext().chat[i].is_user) { return i; }
         }
         return -1;
     }
@@ -843,15 +873,15 @@
         if (isProcessingState) { return; }
         isProcessingState = true;
         try {
-            if (index === "{{lastMessageId}}") { index = SillyTavern.chat.length - 1; }
-            const lastAIMessage = SillyTavern.chat[index];
+            if (index === "{{lastMessageId}}") { index = SillyTavern.getContext().chat.length - 1; }
+            const lastAIMessage = SillyTavern.getContext().chat[index];
             if (!lastAIMessage || lastAIMessage.is_user) { return; }
 
             let state;
             if (prevState) {
                 state = goodCopy(prevState);
             } else {
-                state = await findLatestState(SillyTavern.chat, index - 1);
+                state = await findLatestState(SillyTavern.getContext().chat, index - 1);
             }
             await new Promise(resolve => setTimeout(resolve, DELAY_MS));
             const newCommands = extractCommandsFromText(lastAIMessage.mes);
@@ -878,8 +908,8 @@
 
     async function loadStateToMemory(targetIndex) {
         logger.info(`Loading state into memory up to index ${targetIndex}.`);
-        if (targetIndex === "{{lastMessageId}}") { targetIndex = SillyTavern.chat.length - 1; }
-        let state = await findLatestState(SillyTavern.chat, targetIndex);
+        if (targetIndex === "{{lastMessageId}}") { targetIndex = SillyTavern.getContext().chat.length - 1; }
+        let state = await findLatestState(SillyTavern.getContext().chat, targetIndex);
         if (targetIndex <= 0) {
             const baseData = await getBaseDataFromWI();
             if (baseData) {
@@ -893,7 +923,7 @@
     }
 
     async function findLastAiMessageAndIndex(beforeIndex = -1) {
-        const chat = SillyTavern.chat;
+        const chat = SillyTavern.getContext().chat;
         const searchUntil = (beforeIndex === -1) ? chat.length : beforeIndex;
         for (let i = searchUntil - 1; i >= 0; i--) {
             if (chat[i] && chat[i].is_user === false) return i;
@@ -963,7 +993,7 @@
                         case event_types.GENERATION_ENDED:
                             stopGenerationWatcher();
                             curr_state = STATES.PROCESSING;
-                            const index = SillyTavern.chat.length - 1;
+                            const index = SillyTavern.getContext().chat.length - 1;
                             await processMessageState(index);
                             curr_state = STATES.IDLE;
                             prevState = null;
@@ -1080,11 +1110,13 @@
                 toastr.error("Current state is invalid. Cannot checkpoint.");
                 return;
             }
-            const lastAiMessage = SillyTavern.chat[lastAiIndex];
+            const lastAiMessage = SillyTavern.getContext().chat[lastAiIndex];
             const cleanNarrative = lastAiMessage.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim();
             const newStateBlock = await chunkedStringify(currentState);
             const finalContent = `${cleanNarrative}\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
-            await setChatMessages([{'message_id': lastAiIndex, 'message': finalContent}]);
+            
+            await TavernHelper.setChatMessages([{'message_id': lastAiIndex, 'message': finalContent}]);
+            
             toastr.success("Checkpoint created successfully!");
         } catch (error) {
             logger.error("Manual checkpoint failed.", error);
@@ -1106,8 +1138,8 @@
         }
         isProcessingState = true;
         try {
-            const initialState = await findLatestState(SillyTavern.chat, lastAiIndex - 1);
-            const messageContent = SillyTavern.chat[lastAiIndex].mes;
+            const initialState = await findLatestState(SillyTavern.getContext().chat, lastAiIndex - 1);
+            const messageContent = SillyTavern.getContext().chat[lastAiIndex].mes;
             const newCommands = extractCommandsFromText(messageContent);
             const newState = await executeCommandPipeline(newCommands, initialState);
             await sam_renewVariables(newState);
@@ -1120,7 +1152,7 @@
                 const newStateBlock = await chunkedStringify(newState);
                 finalContent += `\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
             }
-            await setChatMessages([{'message_id':lastAiIndex, 'message':finalContent}]);
+            await TavernHelper.setChatMessages([{'message_id':lastAiIndex, 'message':finalContent}]);
             toastr.success("Rerun complete. State saved.");
         } catch (error) {
             logger.error("Manual rerun failed.", error);
@@ -1161,11 +1193,11 @@
                 toastr.error("SAM API: Cannot set data. No AI message found.");
                 return;
             }
-            const lastAiMessage = SillyTavern.chat[lastAiIndex];
+            const lastAiMessage = SillyTavern.getContext().chat[lastAiIndex];
             const cleanNarrative = lastAiMessage.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim();
             const newStateBlock = await chunkedStringify(newData);
             const finalContent = `${cleanNarrative}\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
-            await setChatMessages([{'message_id': lastAiIndex, 'message': finalContent}]);
+            await TavernHelper.setChatMessages([{'message_id': lastAiIndex, 'message': finalContent}]);
             await sam_renewVariables(newData);
             toastr.success("SAM API: Data block updated successfully!");
         } catch (error) {
@@ -1198,27 +1230,16 @@
     }
 
     async function sam_set_setting(key, value) {
-        if (Object.prototype.hasOwnProperty.call(sam_settings, key)) {
-            if (typeof value !== typeof DEFAULT_SETTINGS[key]) {
-                const msg = `SAM API: Invalid type for setting '${key}'. Expected ${typeof DEFAULT_SETTINGS[key]}, got ${typeof value}.`;
-                logger.error(msg);
-                toastr.error(msg);
-                return;
-            }
-            sam_settings[key] = value;
-            await saveSamSettings();
-            const msg = `SAM setting '${key}' updated to: ${JSON.stringify(value)}`;
-            logger.info(msg);
-            toastr.info(msg);
-        } else {
-            const msg = `SAM API: Attempted to set unknown setting '${key}'.`;
-            logger.warn(msg);
-            toastr.warning(msg);
+
+        try{
+            await saveSamSettings(key, value);
+        }catch (error){
+            logger.error(`[SAM] failed to save extension settings.`, error);
         }
     }
     
     function sam_get_settings() {
-        return { ...sam_settings };
+        return loadSamSettings();
     }
 
     module.exports = {
@@ -1236,7 +1257,7 @@
         $(async () => {
             console.log("SAM: DOM content loaded. Initializing...");
             try {
-                await loadSamSettings();
+                loadSamSettings();
                 if (!sam_settings.enabled) {
                     logger.info("SAM is disabled in settings. Halting initialization.");
                     return;
