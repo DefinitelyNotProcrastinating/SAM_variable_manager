@@ -326,7 +326,6 @@
             toastr.error("SAM API: sam_set_data requires a valid object.");
             return;
         }
-        isCheckpointing = true;
         try {
             const lastAiIndex = await findLastAiMessageAndIndex();
             if (lastAiIndex === -1) {
@@ -344,7 +343,6 @@
             logger.error("[External API] sam_set_data failed.", error);
             toastr.error("SAM API: Failed to set data. Check console.");
         } finally {
-            isCheckpointing = false;
         }
     };
 
