@@ -11,15 +11,16 @@
     const SCRIPT_VERSION = "4.0.5";
     const JSON_REPAIR_URL = "https://cdn.jsdelivr.net/npm/jsonrepair/lib/umd/jsonrepair.min.js";
 
-    const DEFAULT_SETTINGS = Object.freeze({
+    const DEFAULT_SETTINGS = {
         enabled: true,
         disable_dtype_mutation: false,
         uniquely_identified: false,
         enable_auto_checkpoint: true,
         checkpoint_frequency: 20,
-        summary_prompt = "placeholder",
-        summary_frequency = 30
-    });
+        summary_prompt: 'Condense the following chat messages into a concise summary of the most important facts and events. If a previous summary is provided, use it as a base and expand on it with new information. Limit the new summary to {{words}} words or less. Your response should include nothing but the summary.',
+        summary_frequency: 30,
+        summary_words: 150
+    }
 
     let sam_settings = { ...DEFAULT_SETTINGS };
 
@@ -45,7 +46,7 @@
         INV:'SAM_INV' // data invalid. must re-fetch data.
     };
 
-    var { eventSource, eventTypes, extensionSettings,saveSettingsDebounced } = SillyTavern.getContext();
+    var { eventSource, eventTypes, extensionSettings, saveSettingsDebounced, generateQuietPrompt, substituteParamsExtended, getTokenCountAsync, getMaxContextSize } = SillyTavern.getContext();
     var _ = require('lodash');
     
     const STATES = { IDLE: "IDLE", AWAIT_GENERATION: "AWAIT_GENERATION", PROCESSING: "PROCESSING" };
@@ -231,7 +232,6 @@
         return await sam_getWorldbook(curr_name);
     }
 
-    // we also need a write data to WI function?
     async function getBaseDataFromWI() {
         const WI_ENTRY_NAME = "__SAM_base_data__";
         try {
@@ -360,34 +360,92 @@
         await saveSamSettings();
     }
 
-    async function summary(){
-        // gets the current chat history and sends it in openAI-compatible format
-
-        // call summary here
-        // summary...
-        let summary_result = "summary result";
-
-
-
-        // then, write it to response_summary or append it to response summary.
-        let curr_data = await getVariables();
-
-        curr_data = goodCopy(curr_data);
-        curr_data.response_summary = summary_result;
-
-
-        // if it isn't idle, we wait until it is idle
-        if (currStatus !== STATES.IDLE){
-            //wait until idle...
-            // every 5s, broadcast the EXT_ASK_STATUS.
+    async function summary() {
+        try {
+            logger.info("[SAM] Starting summary generation...");
+            const settings = loadSamSettings();
+            const context = SillyTavern.getContext();
+            const chat = context.chat;
+    
+            if (chat.length === 0) {
+                logger.info("[SAM] No chat messages to summarize.");
+                return;
+            }
+    
+            // 1. Get previous data and messages to summarize
+            let current_data = await getVariables();
+            const previousSummary = Array.isArray(current_data.responseSummary) && current_data.responseSummary.length > 0
+                ? current_data.responseSummary[current_data.responseSummary.length - 1]
+                : "";
+    
+            const messagesToSummarize = chat.slice(-settings.summary_frequency);
+            const messageText = messagesToSummarize
+                .map(msg => `${msg.name}: ${msg.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim()}`)
+                .join('\n');
+    
+            // 2. Construct the text for the AI
+            let textForSummarization = messageText;
+            if (previousSummary) {
+                textForSummarization = `PREVIOUS SUMMARY:\n${previousSummary}\n\nNEW MESSAGES TO ADD:\n${messageText}`;
+            }
+    
+            const promptTemplate = substituteParamsExtended(settings.summary_prompt, { words: settings.summary_words });
+            let fullPromptForAI = `${textForSummarization}\n\nINSTRUCTIONS:\n${promptTemplate}`;
+    
+            // 3. Check and handle token limits
+            const maxContextTokens = await getMaxContextSize();
+            const promptBudget = maxContextTokens - (settings.summary_words * 1.5); // Buffer for response
+    
+            let tokenCount = await getTokenCountAsync(fullPromptForAI);
+    
+            if (tokenCount > promptBudget) {
+                logger.warn(`[SAM] Prompt is too long (${tokenCount} tokens), truncating...`);
+                const lines = textForSummarization.split('\n');
+                while (tokenCount > promptBudget && lines.length > 1) {
+                    lines.shift(); // Remove oldest lines first
+                    textForSummarization = lines.join('\n');
+                    fullPromptForAI = `${textForSummarization}\n\nINSTRUCTIONS:\n${promptTemplate}`;
+                    tokenCount = await getTokenCountAsync(fullPromptForAI);
+                }
+            }
+            
+            if (tokenCount > promptBudget) {
+                logger.error(`[SAM] Prompt is still too long after truncation (${tokenCount} tokens). Aborting summary.`);
+                return;
+            }
+    
+            // 4. Call the AI to get the summary
+            logger.info("[SAM] Sending request to AI for summarization.");
+            const summary_result = await generateQuietPrompt(fullPromptForAI);
+    
+            if (!summary_result || summary_result.trim().length === 0) {
+                logger.warn("[SAM] Summary generation returned an empty result.");
+                return;
+            }
+    
+            logger.info("[SAM] Received summary from AI.");
+            
+            // 5. Update the state with the new summary
+            let updated_data = await getVariables();
+            updated_data = goodCopy(updated_data);
+    
+            if (!Array.isArray(updated_data.responseSummary)) {
+                updated_data.responseSummary = [];
+            }
+            updated_data.responseSummary.push(summary_result.trim());
+    
+            if (currStatus !== STATES.IDLE) {
+                // Logic to wait for IDLE state can be implemented here
+            }
+    
+            logger.info("[SAM] Saving new summary as a checkpoint.");
+            await sam_set_data(updated_data);
+            toastr.success("Chat summary updated.");
+    
+        } catch (error) {
+            logger.error("[SAM] An error occurred during the summary process.", error);
+            toastr.error("Failed to generate chat summary.");
         }
-
-        // now save it as a checkpoint.
-        await sam_set_data(curr_data);
-
-        // written.
-
-
     }
 
     async function sam_summary(){
