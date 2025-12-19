@@ -6,6 +6,7 @@
 // == It now features a revolutionary checkpointing system to significantly
 // == reduce chat history bloat.
 // ==
+// == [UPDATED] Added UI Callback Registration for React Frontend sync.
 // == [FIX in 4.0.5] Corrected settings persistence to use the standard 'extension_settings' object.
 // == [NEW in 4.0.4] Event-Driven Architecture. Data loading is deferred until
 // ==                'chat_completion_prompt_ready'.
@@ -24,9 +25,6 @@
     const SCRIPT_VERSION = "4.0.5";
     const JSON_REPAIR_URL = "https://cdn.jsdelivr.net/npm/jsonrepair/lib/umd/jsonrepair.min.js";
 
-    // NEW: Centralized settings management
-
-
     const DEFAULT_SETTINGS = Object.freeze({
         enabled: true,
         disable_dtype_mutation: false,
@@ -34,9 +32,6 @@
         enable_auto_checkpoint: true,
         checkpoint_frequency: 20
     });
-
-    
-
 
     let sam_settings = { ...DEFAULT_SETTINGS };
 
@@ -58,6 +53,9 @@
 
     // Flag to pause execution based on World Info presence
     var go_flag = false;
+    
+    // [NEW] Callback for React UI
+    var _ui_update_callback = null;
 
     // Regexes for parsing and removing state blocks from messages
     const STATE_BLOCK_PARSE_REGEX = new RegExp(`(?:${OLD_START_MARKER.replace(/\|/g, '\\|')}|${NEW_START_MARKER.replace(/\$/g, '\\$')})\\s*([\\s\\S]*?)\\s*(?:${OLD_END_MARKER.replace(/\|/g, '\\|')}|${NEW_END_MARKER.replace(/\$/g, '\\$')})`, 's');
@@ -110,46 +108,26 @@
 
 
     function loadSamSettings() {
-        // Initialize settings if they don't exist
         if (!extensionSettings[MODULE_NAME]) {
             extensionSettings[MODULE_NAME] = structuredClone(DEFAULT_SETTINGS);
         }
-
-        // Ensure all default keys exist (helpful after updates)
         for (const key of Object.keys(DEFAULT_SETTINGS)) {
             if (!Object.hasOwn(extensionSettings[MODULE_NAME], key)) {
                 extensionSettings[MODULE_NAME][key] = DEFAULT_SETTINGS[key];
             }
         }
-
         return extensionSettings[MODULE_NAME];
     }
 
-
-    async function saveSamSettings(new_settings_json) {
-        try {
-            // Directly assign the current settings object to the global settings object.
-            // SillyTavern's framework handles the actual persistence to storage.
-            const settings = loadSamSettings();
-
-            settings = new_settings_json;
-            saveSettingsDebounced();
-
-            logger.info("SAM settings saved successfully.");
-        } catch (error) {
-            logger.error("Failed to save SAM settings.", error);
-            toastr.error("Failed to save SAM settings.");
-        }
-    }
     async function saveSamSettings(key, value){
         try {
-            // Directly assign the current settings object to the global settings object.
-            // SillyTavern's framework handles the actual persistence to storage.
             var settings = loadSamSettings();
-
-            settings[key] = value;
+            if(typeof key === 'object' && key !== null && !Array.isArray(key)) {
+                 Object.assign(settings, key);
+            } else {
+                 settings[key] = value;
+            }
             saveSettingsDebounced();
-
             logger.info("SAM settings saved successfully.");
         } catch (error) {
             logger.error("Failed to save SAM settings.", error);
@@ -157,27 +135,28 @@
         }
     }
 
-
-
-
-
-
-
-
-    // [MODIFIED] Replaces updateGoFlag. Checks strictly for World Info entry.
     async function checkWorldInfoActivation() {
         try {
             const wi = await getCurrentWorldbookName();
-            if (wi && Array.isArray(wi)) {
-                // Check if any entry has the magic name
-                const hasIdentifier = wi.some(entry => entry.name === SAM_ACTIVATION_KEY);
-                if (go_flag !== hasIdentifier) {
-                    go_flag = hasIdentifier;
+            
+            let wiidx = 0;
+            let verified_go_flag = false;
+            while (wi.entries[`${wiidx}`]){
+                if (wi.entries[`${wiidx}`].comment === SAM_ACTIVATION_KEY) {
+                    verified_go_flag = true;
                     logger.info(`[SAM] Activation Key "${SAM_ACTIVATION_KEY}" ${go_flag ? 'FOUND' : 'MISSING'}. Script is ${go_flag ? 'ACTIVE' : 'DORMANT'}.`);
+                    break;
                 }
-            } else {
-                go_flag = false;
+                wiidx ++;
             }
+
+            if (!verified_go_flag){
+                logger.info(`[SAM] Did not find activation key in card`);
+            }
+            go_flag = verified_go_flag;
+
+            
+
         } catch (e) {
             logger.error("Error checking world info activation:", e);
             go_flag = false;
@@ -196,10 +175,7 @@
         eventSource.off(event_types.CHAT_CHANGED, oldHandlers.handleChatChanged);
         eventSource.off(event_types.MESSAGE_SENT, oldHandlers.handleMessageSent);
         eventSource.off(event_types.GENERATION_STOPPED, oldHandlers.handleGenerationStopped);
-        
-        // Remove the new listener
         eventSource.off(event_types.CHAT_COMPLETION_PROMPT_READY, oldHandlers.handlePromptReady);
-        
         delete window[HANDLER_STORAGE_KEY];
     };
 
@@ -209,7 +185,6 @@
         }
         let data = SillyTavern.getContext().variables.local.get("SAM_data");
         return data;
-        
     }
 
     async function setAllVariables(newData){
@@ -219,15 +194,24 @@
         SillyTavern.getContext().variables.local.set("SAM_data", newData);
         return 0;
     }
-
+    
+    // [MODIFIED] Trigger UI callback here to ensure frontend sees exactly what is in memory
     async function sam_renewVariables(SAM_data){
         let curr_variables = await getVariables();
         if (!curr_variables || !curr_variables.SAM_data){
-            console.log("[SAM] tried to renew, but SAM_data variable not found!");
-            return -1;
+            console.log("[SAM] tried to renew, but SAM_data variable not found! Initializing.");
+            curr_variables = { SAM_data: {} };
         }
         _.set(curr_variables, "SAM_data", goodCopy(SAM_data));
         await setAllVariables(curr_variables);
+
+        // [NEW] Trigger React UI Update
+        if (_ui_update_callback && typeof _ui_update_callback === 'function' && go_flag) {
+            // setTimeout ensures we don't block the logic loop
+
+            
+            setTimeout(() => _ui_update_callback(), 0);
+        }
         return 0;
     }
 
@@ -897,7 +881,7 @@
                 const newStateBlock = await chunkedStringify(newState);
                 finalContent += `\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
             }
-            await setChatMessage({ message: finalContent }, index, "display_current");
+            await TavernHelper.setChatMessages([{'message_id': index, 'message': finalContent}]);
         } catch (error) {
             logger.error(`Error in processMessageState for index ${index}:`, error);
         } finally {
@@ -940,7 +924,6 @@
     }
 
     async function dispatcher(event, ...event_params) {
-        // [MODIFIED] Dispatcher only reacts if go_flag is true, except for the ready check
         if (!go_flag && event !== event_types.CHAT_COMPLETION_PROMPT_READY) {
             return;
         }
@@ -954,13 +937,9 @@
                 case STATES.IDLE:
                     switch (event) {
                         case event_types.CHAT_COMPLETION_PROMPT_READY:
-                            // State loading happens in the handler itself for this event,
-                            // we just need to ensure we transition correctly for the generation.
                             curr_state = STATES.AWAIT_GENERATION;
                             startGenerationWatcher();
                             break;
-                            
-                        // Fallback logic for regenerations/swipes which might bypass prompt_ready in some flows
                         case event_types.MESSAGE_SENT:
                         case event_types.GENERATION_STARTED:
                             if (event_params[2]) { return; }
@@ -978,7 +957,6 @@
                             prevState = goodCopy((await getVariables()).SAM_data);
                             break;
                         case event_types.CHAT_CHANGED:
-                            // Reset everything on chat change
                             go_flag = false;
                             prevState = null;
                             logger.info("[SAM] Chat changed. Resetting to dormant state.");
@@ -1052,7 +1030,6 @@
     }
 
     const handlers = {
-        // [NEW] The critical handler that gates execution
         handlePromptReady: async () => {
             logger.info("[SAM] Prompt Ready Event Detected. Checking activation...");
             await checkWorldInfoActivation();
@@ -1060,9 +1037,15 @@
                 logger.info("[SAM] Identifier found. Syncing state from history before generation...");
                 await sync_latest_state();
                 prevState = goodCopy((await getVariables()).SAM_data);
-                // Trigger dispatcher to shift state to AWAIT_GENERATION
                 await unifiedEventHandler(event_types.CHAT_COMPLETION_PROMPT_READY);
             }
+
+            if (_ui_update_callback){
+                console.log("UI CALLBACK TRIGGER");
+                setTimeout(() => _ui_update_callback(), 0);
+                console.log("UI CALLBACK TRIGGER COMPLETE");
+            }
+
         },
 		handleGenerationStarted: async (ev, options, dry_run) => { await unifiedEventHandler(event_types.GENERATION_STARTED, ev, options, dry_run); },
 		handleGenerationEnded: async () => { await unifiedEventHandler(event_types.GENERATION_ENDED); },
@@ -1073,97 +1056,21 @@
 		handleMessageSent: () => { setTimeout(async () => { await unifiedEventHandler(event_types.MESSAGE_SENT); }, 0); },
 		handleGenerationStopped: () => { setTimeout(async () => { await unifiedEventHandler(event_types.GENERATION_STOPPED); }, 0); },
 	};
-
-    function resetCurrentState() {
-        stopGenerationWatcher();
-        curr_state = STATES.IDLE;
-        isDispatching = false;
-        isProcessingState = false;
-        isCheckpointing = false;
-        event_queue.length = 0;
-        prevState = null;
-        // In the new logic, we re-check logic gate on reset
-        checkWorldInfoActivation().then(() => {
-            if(go_flag) {
-                sync_latest_state().then(() => toastr.success("SAM state has been reset and re-synced."));
-            } else {
-                 toastr.info("SAM state reset. Logic dormant (No identifier).");
-            }
-        });
-    }
-
-    async function manualCheckpoint() {
-        if (isCheckpointing || isProcessingState || curr_state !== STATES.IDLE) {
-            toastr.warning("SAM is busy. Cannot create checkpoint now.");
-            return;
-        }
-        isCheckpointing = true;
-        try {
-            const lastAiIndex = await findLastAiMessageAndIndex();
-            if (lastAiIndex === -1) {
-                toastr.error("Cannot checkpoint: No AI message found.");
-                return;
-            }
-            const currentState = (await getVariables()).SAM_data;
-            if (!currentState) {
-                toastr.error("Current state is invalid. Cannot checkpoint.");
-                return;
-            }
-            const lastAiMessage = SillyTavern.getContext().chat[lastAiIndex];
-            const cleanNarrative = lastAiMessage.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim();
-            const newStateBlock = await chunkedStringify(currentState);
-            const finalContent = `${cleanNarrative}\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
-            
-            await TavernHelper.setChatMessages([{'message_id': lastAiIndex, 'message': finalContent}]);
-            
-            toastr.success("Checkpoint created successfully!");
-        } catch (error) {
-            logger.error("Manual checkpoint failed.", error);
-            toastr.error("Checkpoint failed. Check console.");
-        } finally {
-            isCheckpointing = false;
-        }
-    }
-
-    async function rerunLatestCommands() {
-        if (curr_state !== STATES.IDLE) {
-            toastr.error("Cannot rerun commands now. The script is busy.");
-            return;
-        }
-        const lastAiIndex = await findLastAiMessageAndIndex();
-        if (lastAiIndex === -1) {
-            toastr.info("No AI message found to rerun.");
-            return;
-        }
-        isProcessingState = true;
-        try {
-            const initialState = await findLatestState(SillyTavern.getContext().chat, lastAiIndex - 1);
-            const messageContent = SillyTavern.getContext().chat[lastAiIndex].mes;
-            const newCommands = extractCommandsFromText(messageContent);
-            const newState = await executeCommandPipeline(newCommands, initialState);
-            await sam_renewVariables(newState);
-            const currentRound = await getRoundCounter();
-            const shouldCheckpoint = sam_settings.enable_auto_checkpoint && sam_settings.checkpoint_frequency > 0 &&
-                                     (currentRound > 0 && (currentRound % sam_settings.checkpoint_frequency === 0 || lastAiIndex === 0));
-            const cleanNarrative = messageContent.replace(STATE_BLOCK_REMOVE_REGEX, '').trim();
-            let finalContent = cleanNarrative;
-            if (shouldCheckpoint) {
-                const newStateBlock = await chunkedStringify(newState);
-                finalContent += `\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
-            }
-            await TavernHelper.setChatMessages([{'message_id':lastAiIndex, 'message':finalContent}]);
-            toastr.success("Rerun complete. State saved.");
-        } catch (error) {
-            logger.error("Manual rerun failed.", error);
-            toastr.error("Rerun failed. Check console.");
-        } finally {
-            isProcessingState = false;
-        }
-    }
     
     // ============================================================================
     // == EXPOSED API FOR EXTERNAL SCRIPTS
     // ============================================================================
+    
+    // [NEW] API to register callback
+    function sam_register_update_callback(callback) {
+        if (typeof callback === 'function') {
+            _ui_update_callback = callback;
+            logger.info("UI Update Callback registered.");
+        } else {
+            logger.warn("Attempted to register an invalid UI callback.");
+        }
+    }
+
     function sam_get_state() { return curr_state; };
 
     async function sam_get_data() {
@@ -1207,37 +1114,34 @@
         }
     };
     
-    function sam_abort_cycle() { resetCurrentState(); };
+    function sam_abort_cycle() { 
+        stopGenerationWatcher();
+        curr_state = STATES.IDLE;
+        isDispatching = false;
+        event_queue.length = 0;
+        prevState = null;
+        checkWorldInfoActivation().then(() => { if(go_flag) sync_latest_state(); });
+    };
 
     async function sam_enable(){
-        if (!sam_settings.enabled) {
-            sam_settings.enabled = true;
-            toastr.success("Situational Awareness Manager has been enabled.");
-            logger.info("SAM has been ENABLED via API call.");
-            await saveSamSettings();
-            await sync_latest_state();
-        }
+        sam_settings.enabled = true;
+        toastr.success("Situational Awareness Manager has been enabled.");
+        await saveSamSettings();
+        await sync_latest_state();
     }
 
     async function sam_disable(){
-        if (sam_settings.enabled) {
-            sam_settings.enabled = false;
-            toastr.success("Situational Awareness Manager has been disabled.");
-            logger.info("SAM has been DISABLED via API call.");
-            await saveSamSettings();
-        }
+        sam_settings.enabled = false;
+        toastr.success("Situational Awareness Manager has been disabled.");
+        await saveSamSettings();
     }
 
     async function sam_set_setting(key, value) {
-
-        try{
-            await saveSamSettings(key, value);
-        }catch (error){
-            logger.error(`[SAM] failed to save extension settings.`, error);
-        }
+        await saveSamSettings(key, value);
     }
 
-    function sam_is_in_use(){
+    async function sam_is_in_use(){
+        await checkWorldInfoActivation();
         return go_flag;
     }
     
@@ -1255,6 +1159,7 @@
         sam_is_in_use,
         sam_set_setting,
         sam_get_settings,
+        sam_register_update_callback, // [NEW] Export
     };
 
     (() => {
@@ -1269,8 +1174,6 @@
 
                 cleanupPreviousInstance();
                 
-                // [MODIFIED] Immediate loading logic REMOVED.
-                // We now strictly wait for events to trigger data loading.
                 logger.info("SAM: Event listeners registered. Waiting for prompt ready event or activation key.");
 
                 eventSource.makeFirst(event_types.GENERATION_STARTED, handlers.handleGenerationStarted);
@@ -1281,8 +1184,6 @@
                 eventSource.on(event_types.CHAT_CHANGED, handlers.handleChatChanged);
                 eventSource.on(event_types.MESSAGE_SENT, handlers.handleMessageSent);
                 eventSource.on(event_types.GENERATION_STOPPED, handlers.handleGenerationStopped);
-                
-                // [NEW] The specific event requested
                 eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, handlers.handlePromptReady);
                 
                 window[HANDLER_STORAGE_KEY] = handlers;

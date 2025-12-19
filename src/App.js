@@ -10,12 +10,11 @@ import {
     sam_set_setting,
     sam_is_in_use,
     sam_get_state,
+    sam_register_update_callback, // [NEW] Import this
 } from './base_var_manager.js';
 import './App.css';
 
 // --- Helper Components (No changes needed here) ---
-var { eventSource, event_types } = SillyTavern.getContext();
-
 const ToggleSwitch = ({ label, value, onChange }) => (
     <div className="sam_form_row">
         <label className="sam_label">{label}</label>
@@ -239,38 +238,44 @@ function App() {
     const nodeRef = useRef(null);
 
     const refreshDataAndSummary = useCallback(async () => {
+        if (! await sam_is_in_use()) {
+            console.log("SAM UI: Refresh skipped, SAM is not active.");
+            return;
+        }
+
         const rawData = await sam_get_data();
         if (rawData) {
             if (!rawData.static) rawData.static = {};
             if (!rawData.func) rawData.func = [];
             if (!rawData.responseSummary) rawData.responseSummary = [];
+            
             setLiveSamData(rawData);
-            setDraftSamData(rawData);
             setSummaries(rawData.responseSummary.join('\n'));
+            
+            // Sync draft data only if the UI is not open to avoid overwriting user edits.
+            if (!showInterface) {
+                setDraftSamData(rawData);
+            }
+            console.log("SAM UI: Data refreshed from backend.");
         }
-    }, []);
+    }, [showInterface]); // Dependency on showInterface is important here
 
-    // Effect to listen for prompt-ready event and refresh data
+    // [MODIFIED] Use the registration callback instead of eventSource directly
     useEffect(() => {
-        const handlePromptReady = () => {
-            console.log("ATTEMPTING TO REFRESH due to SAM CARD SWITCH ");
-            if (sam_is_in_use()) {
-                refreshDataAndSummary();
-            }
-            console.log("REFRESH COMPLETED");
+        // Define the handler that the backend will call
+        const handleBackendUpdate = () => {
+            console.log("SAM UI: Received update signal from backend.");
+            refreshDataAndSummary();
         };
-        eventSource = SillyTavern.getContext().eventSource;
-        event_types = SillyTavern.getContext().eventTypes;
 
+        // Register it
+        sam_register_update_callback(handleBackendUpdate);
 
-        if (eventSource && event_types) {
-            eventSource.on(event_types.CHAT_COMPLETION_PROMPT_READY, handlePromptReady);
-        }
-
+        // No cleanup is strictly needed as it's a singleton pattern in the backend,
+        // but it's good practice in React to return a cleanup function.
         return () => {
-            if (eventSource && event_types && (!sam_is_in_use())) {
-                eventSource.off(event_types.CHAT_COMPLETION_PROMPT_READY, handlePromptReady);
-            }
+            // Unregister if an unregister function is ever added to the backend
+            // sam_unregister_update_callback(handleBackendUpdate);
         };
     }, [refreshDataAndSummary]);
 
@@ -290,21 +295,32 @@ function App() {
 
     const loadInitialData = useCallback(async (showAlerts = false) => {
         try {
-            await refreshDataAndSummary();
+            const rawData = await sam_get_data();
             const settings = await sam_get_settings();
+            
+            if (rawData) {
+                setDraftSamData(rawData);
+                setLiveSamData(rawData);
+                setSummaries((rawData.responseSummary || []).join('\n'));
+            }
             setDraftSamSettings(settings || {});
-
+            
             if (!isDataReady) setIsDataReady(true);
         } catch (e) {
             console.error("SAM UI Error during initial load:", e);
             if (showAlerts) alert("Failed to load SAM data/settings.");
         }
-    }, [isDataReady, refreshDataAndSummary]);
+    }, [isDataReady]);
 
     const handleRefresh = () => {
         if (window.confirm("Are you sure you want to refresh? This will discard any unsaved changes.")) {
-             setDraftSamData(liveSamData);
-             setSummaries(liveSamData.responseSummary.join('\n'));
+             sam_get_data().then(data => {
+                if(data) {
+                    setDraftSamData(data);
+                    setLiveSamData(data);
+                    setSummaries((data.responseSummary || []).join('\n'));
+                }
+             });
              sam_get_settings().then(setDraftSamSettings);
              alert("UI has been refreshed with the latest saved data.");
         }
@@ -514,3 +530,78 @@ function App() {
 }
 
 export default App;
+
+
+
+
+// rethink: Do we really need that?
+// the answer is really NO.
+// base case: use SAM V4 script (no extension) -> works
+// extended case: use the extension, enables auto memory and state manip -> better, still works
+// therefore it is better if we refactor the script and make the plugin purely for auto memory and state manipulation
+// it is actually not very preferred to keep the updater and the script together
+// because there are people who want to use other memory extensions and we will let them!
+
+
+// new arch:
+
+// splitted sources: 1. script 2. ext
+// splitted data sources: 1. chat (perm) 2. vars (temp)
+// event is just a string. We support sending "EVENT" instead of something in event_types.
+// this is completely fine.
+// use await eventEmit for script.
+// use the other method for ext.
+/*
+normal gameplay:
+
+script - begin
+script - AITime
+script - finish
+script gets the SAM_data current
+script processes @.commands from AI
+script writes new SAM_data to chat
+script broadcast event: SAM_DATA_UPDATED
+ext receives event, updates its display
+
+Summary:
+
+for 20 runs later... or some preset checkpoint time
+There is going to be a race condition and this is guaranteed.
+AI might be running, but ext is also running AI summary. 
+If ext finishes earlier than AI, it will update SAM data FIRST, which is bad behavior.
+
+ext - sends SAM_SUMMARY_BEGIN
+ext - AITime
+ext - sends SAM_SUMMARY_END
+ext checks script's window function to see if it is idle or not. If not, wait.
+Or, ext broadcasts SAM_ASK_FOR_IDLE. script waits 0.05s, then broadcasts SAM_IS_IDLE or SAM_IS_NOT_IDLE after receiving.
+ext may choose to re-ask this question every 1s. 1s is fairly long in computer time.
+ext gets SAM_data
+ext writes SAM_data.response_summary
+ext writes new SAM_data to chat
+ext updates its own display
+
+Edit vars/response_summary:
+ext - commit button pressed
+ext - if json invalid, return -1 (fail)
+ext checks script's window function to see if it is idle or not. If not, wait.
+ext writes it to chat.
+ext writes it to vars.
+ext broadcasts SAM_DATA_UPDATED
+script gets the event
+script triggers rerender on Tavernhelper (Or, a set chat messages with itself. This also re-renders)
+
+
+Function/base Setting updates:
+ext - commit button pressed
+ext - if function invalid, return -1 (fail)
+ext writes it to character variables. This makes it persist with the character
+ext broadcasts SAM_FUNCTION_UPDATED
+script gets the functions and stores them in const functions.
+
+Note that no setting is being stored in global settings. This is expected - different cards 
+may require different settings.
+SAM extension is only an "editor" and summarizer.
+
+
+*/
