@@ -8,13 +8,19 @@ import {
     sam_set_data,
     sam_get_settings,
     sam_set_setting,
-    sam_is_in_use,
-    sam_get_state,
-    sam_register_update_callback, // [NEW] Import this
-} from './base_var_manager.js';
+    sam_is_in_use
+} from './backend.js';
 import './App.css';
+var { eventSource, eventTypes, extensionSettings,saveSettingsDebounced } = SillyTavern.getContext();
 
-
+    const SAM_EVENTS = {
+        CORE_UPDATED: 'SAM_CORE_UPDATED',            // Emitted by Core when state is updated
+        EXT_ASK_STATUS: 'SAM_EXT_ASK_STATUS',        // Emitted by Extension to ask for status
+        CORE_STATUS_RESPONSE: 'SAM_CORE_STATUS_RESPONSE', // Emitted by Core in response to status ask
+        EXT_COMMIT_STATE: 'SAM_EXT_COMMIT_STATE',       // Emitted by Extension to save a full state object
+        CORE_IDLE: 'SAM_CORE_IDLE', // Emitted by core in response to an ask
+        INV:'SAM_INV' // data invalid. must re-fetch data.
+    };
 // use eventSource.on to make this automatically update. Frontend now listens to events as well
 // this avoids communication
 
@@ -404,6 +410,61 @@ function App() {
         }
     };
 
+    // at the present, we still wait for TavernHelper.
+    // will update this later
+    // requires one new button on the function tab.
+    const commitFunctions = async () => {
+
+        // save the functions: we will modify a WI to do this.
+        await TavernHelper.updateWorldbookWith(
+            // update function here
+        );
+    }
+
+    const commitData = async () => {
+        // commit the data
+    }
+
+    const commitBaseSettings = async() => {
+        // commit base settings
+    } 
+
+    const handlers = {
+
+        handleInvalidate : async()=> {
+            // somebody invalidated the data (swipe / edit... )
+            // must refresh. This means we get variables again
+
+            let correct_sam_data = await sam_get_data();
+
+            // this forces the update UI function to be later than the load.
+        },
+        handleChatChanged : async() => {
+            // somebody changed the chat...
+            // must refresh.
+
+            // previously we can parse from chat, but when ISA changes it doesn't matter
+            // therefore we must get some IPC going!
+
+            // INV already handles this as core broadcasts INV
+            // when this listens to INV it knows that it must rewrite the data of character
+            
+            // first, see if it has it enabled
+            let enabled = await sam_is_in_use();
+
+            // if not enabled, then we will be removing the displayed data and make the commit data button invalid.
+            // commit setting button is still valid.
+
+            // if enabled, the commit data button will be set to valid.
+
+
+
+        }
+
+
+
+    }
+
     const modalContent = (
         <div className="sam_modal_overlay">
             <Draggable handle=".sam_modal_header" nodeRef={nodeRef}>
@@ -518,7 +579,16 @@ function App() {
                     </div>
                 </div>
             </Draggable>
+            <script>
+                {
+                    (() => {
+                        eventSource.on(eventTypes.CHAT_CHANGED, handlers.handleChatChanged);
+                        eventSource.on(SAM_EVENTS.INV, handlers.handleInvalidate );
+                    })()
+                }
+            </script>
         </div>
+
     );
 
     return (
@@ -531,81 +601,9 @@ function App() {
             {showInterface && portalContainer && ReactDOM.createPortal(modalContent, portalContainer)}
         </>
     );
+    
 }
 
+
+
 export default App;
-
-
-
-
-// rethink: Do we really need that?
-// the answer is really NO.
-// base case: use SAM V4 script (no extension) -> works
-// extended case: use the extension, enables auto memory and state manip -> better, still works
-// therefore it is better if we refactor the script and make the plugin purely for auto memory and state manipulation
-// it is actually not very preferred to keep the updater and the script together
-// because there are people who want to use other memory extensions and we will let them!
-
-
-// new arch:
-
-// splitted sources: 1. script 2. ext
-// splitted data sources: 1. chat (perm) 2. vars (temp)
-// event is just a string. We support sending "EVENT" instead of something in event_types.
-// this is completely fine.
-// use await eventEmit for script.
-// use the other method for ext.
-/*
-normal gameplay:
-
-script - begin
-script - AITime
-script - finish
-script gets the SAM_data current
-script processes @.commands from AI
-script writes new SAM_data to chat
-script broadcast event: SAM_DATA_UPDATED
-ext receives event, updates its display
-
-Summary:
-
-for 20 runs later... or some preset checkpoint time
-There is going to be a race condition and this is guaranteed.
-AI might be running, but ext is also running AI summary. 
-If ext finishes earlier than AI, it will update SAM data FIRST, which is bad behavior.
-
-ext - sends SAM_SUMMARY_BEGIN
-ext - AITime
-ext - sends SAM_SUMMARY_END
-ext checks script's window function to see if it is idle or not. If not, wait.
-Or, ext broadcasts SAM_ASK_FOR_IDLE. script waits 0.05s, then broadcasts SAM_IS_IDLE or SAM_IS_NOT_IDLE after receiving.
-ext may choose to re-ask this question every 1s. 1s is fairly long in computer time.
-ext gets SAM_data
-ext writes SAM_data.response_summary
-ext writes new SAM_data to chat
-ext updates its own display
-
-Edit vars/response_summary:
-ext - commit button pressed
-ext - if json invalid, return -1 (fail)
-ext checks script's window function to see if it is idle or not. If not, wait.
-ext writes it to chat.
-ext writes it to vars.
-ext broadcasts SAM_DATA_UPDATED
-script gets the event
-script triggers rerender on Tavernhelper (Or, a set chat messages with itself. This also re-renders)
-
-
-Function/base Setting updates:
-ext - commit button pressed
-ext - if function invalid, return -1 (fail)
-ext writes it to character variables. This makes it persist with the character
-ext broadcasts SAM_FUNCTION_UPDATED
-script gets the functions and stores them in const functions.
-
-Note that no setting is being stored in global settings. This is expected - different cards 
-may require different settings.
-SAM extension is only an "editor" and summarizer.
-
-
-*/
