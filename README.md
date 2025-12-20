@@ -32,7 +32,7 @@ https://github.com/DefinitelyNotProcrastinating/ST_var_manager/core.js
 
 ### 必要依赖
 本插件依赖于 **[JS-slash-runner](https://github.com/n0vi028/JS-slash-runner)** (by n0vi028) 来执行脚本逻辑。请确保你的 SillyTavern 已安装并启用了该插件。
-本插件是 [SAM core]https://github.com/DefinitelyNotProcrastinating/ST_var_manager/core.js 的前端/编辑器。请确保卡内附带了这个脚本。
+本插件是 [SAM core](https://github.com/DefinitelyNotProcrastinating/ST_var_manager/core.js) 的前端/编辑器。请确保卡内附带了这个脚本。
 
 ## 🚀 使用指南
 
