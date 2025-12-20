@@ -27,7 +27,7 @@ const SAM_EVENTS = {
     INV: 'SAM_INV' 
 };
 
-// directly store it under identifier. (since we cannot do anything about it)
+// directly store it under identifier.
 const SAM_FUNCTIONLIB_ID = "__SAM_IDENTIFIER__";
 
 // --- Helper Components ---
@@ -74,9 +74,7 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData }) =
         try {
             // 1. Save Plugin Settings
             const generalSettings = { ...settings };
-            // Remove summary specific strings from general save loop if handled elsewhere, 
-            // though sam_set_setting handles keys individually usually.
-            // We strip these just to be clean if they are text areas, but sam_set_setting iterates.
+            // Remove summary specific strings from general save loop
             delete generalSettings.summary_frequency;
             delete generalSettings.summary_prompt;
             delete generalSettings.summary_words;
@@ -86,7 +84,6 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData }) =
             }
 
             // 2. Save State Data (Mutation flags)
-            // This functions as a "Checkpoint" save
             await onCommitData();
 
             toastr.success("Settings and Data configuration saved successfully.");
@@ -268,6 +265,30 @@ const FunctionEditor = ({ functions, setFunctions, onCommit }) => {
     );
 };
 
+// --- ST Style Extension Drawer ---
+const ExtensionDrawer = ({ children, title = "SAM Extension" }) => {
+    const [isOpen, setIsOpen] = useState(false);
+
+    return (
+        <div className="inline-drawer">
+            <div 
+                className="inline-drawer-toggle inline-drawer-header" 
+                onClick={() => setIsOpen(!isOpen)}
+            >
+                <b>{title}</b>
+                <div 
+                    className="inline-drawer-icon fa-solid fa-circle-chevron-down down" 
+                    style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
+                />
+            </div>
+            {isOpen && (
+                <div className="inline-drawer-content">
+                    {children}
+                </div>
+            )}
+        </div>
+    );
+};
 
 // --- Main App Component ---
 
@@ -284,7 +305,9 @@ function App() {
     const [isBusy, setIsBusy] = useState(false);
     const [samStatusText, setSamStatusText] = useState("IDLE");
     
-    const [portalContainer, setPortalContainer] = useState(null);
+    // Portal containers
+    const [portalContainer, setPortalContainer] = useState(null); 
+    const [extensionsContainer, setExtensionsContainer] = useState(null);
     const nodeRef = useRef(null);
 
     // --- Helpers for World Info Functions ---
@@ -300,13 +323,10 @@ function App() {
             const wiData = await context.loadWorldInfo(worldInfoName);
             if (!wiData || !wiData.entries) return [];
 
-            // Find the function library entry using lodash find on the entries object values
             const funcEntry = _.find(wiData.entries, (entry) => 
                 entry.comment === SAM_FUNCTIONLIB_ID || entry.uid === SAM_FUNCTIONLIB_ID
             );
 
-
-            
             if (funcEntry && funcEntry.content) {
                 console.log("[SAM frontend] got function from WI");
                 try {
@@ -325,14 +345,12 @@ function App() {
     };
 
     const saveFunctionsToWI = async (functions) => {
-
         const characterWIName = await TavernHelper.getCurrentCharPrimaryLorebook();
         if (!characterWIName){
             toastr.error("This character does not have a WI");
             return;
         }
         const worldInfoName = await TavernHelper.getWorldbook(characterWIName);
-
 
         if (!worldInfoName) {
             toastr.error("No World Info file associated with this character. Please create one first.");
@@ -342,7 +360,6 @@ function App() {
         const funcString = JSON.stringify(functions, null, 2);
 
         try {
-            // Using TavernHelper.updateWorldbookWith to safely update the specific entry
             let create_new = false;
             let newIndex = 0;
             const entryData = {
@@ -350,13 +367,8 @@ function App() {
                     enabled: false,
                     strategy: {
                         type: "selective",
-                        keys: [
-
-                        ],
-                        keys_secondary: {
-                            "logic": "and_any",
-                            "keys": []
-                        },
+                        keys: [],
+                        keys_secondary: { "logic": "and_any", "keys": [] },
                         "scan_depth": 3
                     },
                     "position": {
@@ -372,11 +384,7 @@ function App() {
                         "prevent_outgoing": true,
                         "delay_until": null
                     },
-                    effect: {
-                        "sticky": null,
-                        "cooldown": null,
-                        "delay": null
-                    },
+                    effect: { "sticky": null, "cooldown": null, "delay": null },
                     addMemo: true,
                     "matchPersonaDescription": false,
                     "matchCharacterDescription": false,
@@ -394,40 +402,20 @@ function App() {
                 }
             await TavernHelper.updateWorldbookWith(characterWIName, (worldbook) => {
                 const entries = worldbook;
-                
-                // Locate the key of the existing entry
-                const entryKey = _.findKey(entries, (entry) => 
-                    entry.name === SAM_FUNCTIONLIB_ID
-                );
-                console.log(`FOUND ENTRY KEY ${JSON.stringify(entryKey)}`);
-
+                const entryKey = _.findKey(entries, (entry) => entry.name === SAM_FUNCTIONLIB_ID);
 
                 if (entryKey) {
-                    // Update existing entry using lodash merge to preserve ID/uid if present, 
-                    // but overwrite content/keys/etc.
-                    console.log("UPDATING existing function entry")
                     _.merge(entries[entryKey], entryData);
                 } else {
-                    // Create new entry
-                    // Find a free numeric index
-                    console.log("CREATING new entry for functions")
                     while (entries[String(newIndex)]) newIndex++;
                     create_new = true;
-                    
-
-
-
                 }
-
-                console.log('---------- MERGE COMPLETE ----------')
-                console.log(JSON.stringify(worldbook[entryKey]))
-
                 return worldbook;
             });
 
             if (create_new){
                 await TavernHelper.createWorldbookEntries(characterWIName, {
-                        uid: newIndex, // Ensuring compatibility
+                        uid: newIndex, 
                         ...entryData
                     });
             }
@@ -453,7 +441,6 @@ function App() {
 
             if (rawData) {
                 if (!rawData.static) rawData.static = {};
-                
                 if (!showInterface) {
                     setDraftSamData(rawData);
                     setSummaries((rawData.responseSummary || []).join('\n'));
@@ -464,7 +451,6 @@ function App() {
             if (funcs) setDraftFunctions(funcs);
 
             if (!isDataReady) setIsDataReady(true);
-            console.log("[SAM frontend] Data refreshed via INV event.");
         } catch (e) {
             console.error("[SAM frontend] Refresh Error:", e);
         }
@@ -490,15 +476,26 @@ function App() {
 
         refreshData();
 
-        const container = document.createElement('div');
-        container.id = 'sam-portal-root';
-        document.body.appendChild(container);
-        setPortalContainer(container);
+        // Portal for Modal
+        const pContainer = document.createElement('div');
+        pContainer.id = 'sam-portal-root';
+        document.body.appendChild(pContainer);
+        setPortalContainer(pContainer);
+
+        // Find Extensions Container for Drawer
+        // We retry briefly in case ST is still loading the DOM or tabs
+        const findExtContainer = setInterval(() => {
+            const extSettings = document.getElementById('extensions_settings');
+            if (extSettings) {
+                setExtensionsContainer(extSettings);
+                clearInterval(findExtContainer);
+            }
+        }, 500);
 
         return () => {
-            //eventSource.off(SAM_EVENTS.INV, onInvalidate);
-            //eventSource.off(SAM_EVENTS.CORE_STATUS_RESPONSE, onStatusResponse);
-            if (container.parentNode) container.parentNode.removeChild(container);
+            // eventSource.off cleanup if needed
+            if (pContainer.parentNode) pContainer.parentNode.removeChild(pContainer);
+            clearInterval(findExtContainer);
         };
     }, [refreshData]);
 
@@ -578,6 +575,21 @@ function App() {
 
     // --- Render ---
 
+    // The Drawer to be placed in the Extensions List
+    const drawerContent = (
+        <ExtensionDrawer title="SAM v4.0.5">
+            <div className="sam_drawer_controls">
+                 <button onClick={() => setShowInterface(true)} className="sam_menu_button full_width">
+                    Open Configuration Manager
+                </button>
+                <div className="sam_status_micro">
+                    Status: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span>
+                </div>
+            </div>
+        </ExtensionDrawer>
+    );
+
+    // The Main Window (Floating Modal)
     const modalContent = (
         <div className="sam_modal_overlay">
             <Draggable handle=".sam_modal_header" nodeRef={nodeRef}>
@@ -740,11 +752,10 @@ function App() {
 
     return (
         <>
-            <div className="sam_trigger_wrapper">
-                <button onClick={() => setShowInterface(true)} className="sam_menu_button">
-                    SAM 4.0 Config
-                </button>
-            </div>
+            {/* Render the Drawer into the Extensions Panel */}
+            {extensionsContainer && ReactDOM.createPortal(drawerContent, extensionsContainer)}
+            
+            {/* Render the Main Window into the Body */}
             {showInterface && portalContainer && ReactDOM.createPortal(modalContent, portalContainer)}
         </>
     );
