@@ -124,6 +124,18 @@
         }
     }
 
+    // Cohee this is your fault
+    // Time-complexity wise what even is the difference between selecting with index and selecting with a hashmap
+    function formatArrayDict(dictarrayinput){
+
+        let result = [];
+        let keys = Object.keys(dictarrayinput);
+        for (let key of  keys){
+            result.push(dictarrayinput[key])
+        }
+        return result;
+    }
+
     async function checkWorldInfoActivation() {
         try {
             var wi;
@@ -140,18 +152,28 @@
             }
             
             let wiidx = 0;
+
+
+            let wi_entry_arr = formatArrayDict(wi.entries);
+
             let verified_go_flag = false;
-            while (wi.entries[`${wiidx}`]){
-                if (wi.entries[`${wiidx}`].comment === SAM_ACTIVATION_KEY) {
-                    verified_go_flag = true;
+
+            for (let item of wi_entry_arr){
+                if (item.comment === SAM_ACTIVATION_KEY){
                     logger.info(`[SAM util] Activation Key "${SAM_ACTIVATION_KEY}" ${go_flag ? 'FOUND' : 'MISSING'}. Script is ${go_flag ? 'ACTIVE' : 'DORMANT'}.`);
+                    verified_go_flag = true;
                     break;
                 }
-                wiidx ++;
             }
+
 
             if (!verified_go_flag){
                 logger.info(`[SAM util] Did not find activation key in card`);
+                let found_entries = [];
+                for (let item of wi_entry_arr){
+                    found_entries.push(item.comment);
+                }
+                logger.info(`[SAM util] found ${JSON.stringify(found_entries)}`)
             }
             go_flag = verified_go_flag;
 

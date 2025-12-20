@@ -26,7 +26,8 @@ const SAM_EVENTS = {
     INV: 'SAM_INV' 
 };
 
-const SAM_FUNCTIONLIB_ID = "__SAM_FUNCTIONLIB__";
+// directly store it under identifier. (since we cannot do anything about it)
+const SAM_FUNCTIONLIB_ID = "__SAM_IDENTIFIER__";
 
 // --- Helper Components ---
 
@@ -314,16 +315,14 @@ function App() {
                 
                 // Locate the key of the existing entry
                 const entryKey = _.findKey(entries, (entry) => 
-                    entry.comment === SAM_FUNCTIONLIB_ID
+                    entry.name === SAM_FUNCTIONLIB_ID
                 );
 
                 const entryData = {
-                    keys: [SAM_FUNCTIONLIB_ID, "sam_functions"],
                     content: funcString,
-                    comment: SAM_FUNCTIONLIB_ID,
+                    name: SAM_FUNCTIONLIB_ID,
                     enabled: false,
                     constant: false,
-                    position: 0 
                 };
 
                 if (entryKey) {
@@ -342,6 +341,8 @@ function App() {
                         uid: newIndex // Ensuring compatibility
                     };
                 }
+                console.log(`Function string: ${funcString}`);
+                console.log(`new WI: ${JSON.stringify(worldbook)}`)
 
                 return worldbook;
             });
