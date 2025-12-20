@@ -318,15 +318,9 @@ function App() {
 
         try {
             // Using TavernHelper.updateWorldbookWith to safely update the specific entry
-            await TavernHelper.updateWorldbookWith(characterWIName, (worldbook) => {
-                const entries = worldbook;
-                
-                // Locate the key of the existing entry
-                const entryKey = _.findKey(entries, (entry) => 
-                    entry.name === SAM_FUNCTIONLIB_ID
-                );
-                console.log(`FOUND ENTRY KEY ${JSON.stringify(entryKey)}`);
-                const entryData = {
+            let create_new = false;
+            let newIndex = 0;
+            const entryData = {
                     name: SAM_FUNCTIONLIB_ID,
                     enabled: false,
                     strategy: {
@@ -373,6 +367,15 @@ function App() {
                     "useGroupScoring": null,
                     "automationId": ""
                 }
+            await TavernHelper.updateWorldbookWith(characterWIName, (worldbook) => {
+                const entries = worldbook;
+                
+                // Locate the key of the existing entry
+                const entryKey = _.findKey(entries, (entry) => 
+                    entry.name === SAM_FUNCTIONLIB_ID
+                );
+                console.log(`FOUND ENTRY KEY ${JSON.stringify(entryKey)}`);
+
 
                 if (entryKey) {
                     // Update existing entry using lodash merge to preserve ID/uid if present, 
@@ -383,13 +386,12 @@ function App() {
                     // Create new entry
                     // Find a free numeric index
                     console.log("CREATING new entry for functions")
-                    let newIndex = 0;
                     while (entries[String(newIndex)]) newIndex++;
+                    create_new = true;
                     
-                    entries[String(newIndex)] = {
-                        uid: newIndex, // Ensuring compatibility
-                        ...entryData
-                    };
+
+
+
                 }
 
                 console.log('---------- MERGE COMPLETE ----------')
@@ -397,6 +399,13 @@ function App() {
 
                 return worldbook;
             });
+
+            if (create_new){
+                await TavernHelper.createWorldbookEntries(characterWIName, {
+                        uid: newIndex, // Ensuring compatibility
+                        ...entryData
+                    });
+            }
 
             toastr.success("Functions saved to World Info Library.");
         } catch (e) {
