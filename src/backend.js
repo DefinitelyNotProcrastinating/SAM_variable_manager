@@ -215,14 +215,8 @@
         }
         _.set(curr_variables, "SAM_data", goodCopy(SAM_data));
         await setAllVariables(curr_variables);
-
-        // [NEW] Trigger React UI Update
-        if (_ui_update_callback && typeof _ui_update_callback === 'function' && go_flag) {
-            // setTimeout ensures we don't block the logic loop
-
-            
-            setTimeout(() => _ui_update_callback(), 0);
-        }
+        
+        await eventSource.emit(SAM_EVENTS.INV);
         return 0;
     }
 
