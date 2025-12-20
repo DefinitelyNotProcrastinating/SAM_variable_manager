@@ -5,6 +5,7 @@
 // Required plugins: JS-slash-runner by n0vi028
 // ****************************
 
+
 (function () {
     // --- CONFIGURATION ---
     const SCRIPT_NAME = "SAM-Util";
@@ -46,8 +47,9 @@
         INV:'SAM_INV' // data invalid. must re-fetch data.
     };
 
-    var { eventSource, eventTypes, extensionSettings, saveSettingsDebounced, generateQuietPrompt, substituteParamsExtended, getTokenCountAsync, getMaxContextSize } = SillyTavern.getContext();
+    var { eventSource, eventTypes, extensionSettings, saveSettingsDebounced, generateQuietPrompt, getTokenCountAsync,substituteParamsExtended} = SillyTavern.getContext();
     var _ = require('lodash');
+
     
     const STATES = { IDLE: "IDLE", AWAIT_GENERATION: "AWAIT_GENERATION", PROCESSING: "PROCESSING" };
 
@@ -150,9 +152,6 @@
                 logger.info(`[SAM util] WI not found. Presumably no character is loaded.`)
                 return;
             }
-            
-            let wiidx = 0;
-
 
             let wi_entry_arr = formatArrayDict(wi.entries);
 
@@ -225,11 +224,12 @@
         return 0;
     }
 
-    async function hearStatus(state, name){
+    async function hearStatus(obj){
 
-            currStatus = state;
-            shouterName = name;
-            logger.info(`[SAM] got status ${currStatus} broadcasted by ${shouterName}`);
+            currStatus = obj.state;
+            shouterName = obj.name;
+            console.log(JSON.stringify(obj));
+            logger.info(`[SAM] got status ${JSON.stringify(currStatus)} broadcasted by ${JSON.stringify(shouterName)}`);
         
     }
 
@@ -429,7 +429,7 @@
                             responseLength: extensionSettings.memory.overrideResponseLength,
                         };
             // 3. Check and handle token limits
-            const maxContextTokens = await getMaxContextSize();
+            const maxContextTokens = 100000;
             const promptBudget = maxContextTokens - (settings.summary_words * 1.5); // Buffer for response
     
             let tokenCount = await getTokenCountAsync(fullPromptForAI);
@@ -455,7 +455,8 @@
             const summary_result = await generateQuietPrompt(params);
     
             if (!summary_result || summary_result.trim().length === 0) {
-                logger.warn("[SAM] Summary generation returned an empty result.");
+                logger.warn("[SAM utils] Summary generation returned an empty result.");
+                toastr.error("[SAM utils] Summary generation returned empty result. Is your API ready?");
                 return;
             }
     
@@ -520,12 +521,16 @@
         return loadSamSettings();
     }
 
+    function sam_get_status(){
+        return currStatus;
+    }
     module.exports = {
         sam_get_data,
         sam_set_data,
         sam_enable,
         sam_disable,
         sam_is_in_use,
+        sam_get_status,
         sam_set_setting,
         sam_get_settings,
         sam_summary

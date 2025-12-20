@@ -9,7 +9,8 @@ import {
     sam_get_settings,
     sam_set_setting,
     sam_is_in_use,
-    sam_summary
+    sam_summary,
+    sam_get_status
 } from './backend.js';
 import './App.css';
 
@@ -278,28 +279,35 @@ function App() {
             const funcEntry = _.find(wiData.entries, (entry) => 
                 entry.comment === SAM_FUNCTIONLIB_ID || entry.uid === SAM_FUNCTIONLIB_ID
             );
+
+
             
             if (funcEntry && funcEntry.content) {
+                console.log("[SAM frontend] got function from WI");
                 try {
                     const parsed = JSON.parse(funcEntry.content);
                     return Array.isArray(parsed) ? parsed : [];
                 } catch (e) {
-                    console.error("SAM: Failed to parse Function Lib from WI", e);
+                    console.error("[SAM frontend] Failed to parse Function Lib from WI", e);
                     return [];
                 }
             }
             return [];
         } catch (e) {
-            console.error("SAM: Error fetching functions from WI", e);
+            console.error("[SAM frontend] Error fetching functions from WI", e);
             return [];
         }
     };
 
     const saveFunctionsToWI = async (functions) => {
-        const context = SillyTavern.getContext();
-        const charId = context.characterId;
-        const character = context.characters[charId];
-        const worldInfoName = character.data.extensions.world;
+
+        const characterWIName = await TavernHelper.getCurrentCharPrimaryLorebook();
+        if (!characterWIName){
+            toastr.error("This character does not have a WI");
+            return;
+        }
+        const worldInfoName = await TavernHelper.getWorldbook(characterWIName);
+
 
         if (!worldInfoName) {
             toastr.error("No World Info file associated with this character. Please create one first.");
@@ -310,39 +318,82 @@ function App() {
 
         try {
             // Using TavernHelper.updateWorldbookWith to safely update the specific entry
-            await TavernHelper.updateWorldbookWith(worldInfoName, (worldbook) => {
-                const entries = worldbook.entries;
+            await TavernHelper.updateWorldbookWith(characterWIName, (worldbook) => {
+                const entries = worldbook;
                 
                 // Locate the key of the existing entry
                 const entryKey = _.findKey(entries, (entry) => 
                     entry.name === SAM_FUNCTIONLIB_ID
                 );
-
+                console.log(`FOUND ENTRY KEY ${JSON.stringify(entryKey)}`);
                 const entryData = {
-                    content: funcString,
                     name: SAM_FUNCTIONLIB_ID,
                     enabled: false,
-                    constant: false,
-                };
+                    strategy: {
+                        type: "selective",
+                        keys: [
+
+                        ],
+                        keys_secondary: {
+                            "logic": "and_any",
+                            "keys": []
+                        },
+                        "scan_depth": 3
+                    },
+                    "position": {
+                        "type": "at_depth",
+                        "role": "system",
+                        "depth": 543,
+                        "order": 543
+                    },
+                    content: funcString,
+                    probability: 100,
+                    recursion: {
+                        "prevent_incoming": true,
+                        "prevent_outgoing": true,
+                        "delay_until": null
+                    },
+                    effect: {
+                        "sticky": null,
+                        "cooldown": null,
+                        "delay": null
+                    },
+                    addMemo: true,
+                    "matchPersonaDescription": false,
+                    "matchCharacterDescription": false,
+                    "matchCharacterPersonality": false,
+                    "matchCharacterDepthPrompt": false,
+                    "matchScenario": false,
+                    "matchCreatorNotes": false,
+                    "group": "",
+                    "groupOverride": false,
+                    "groupWeight": 100,
+                    "caseSensitive": false,
+                    "matchWholeWords": null,
+                    "useGroupScoring": null,
+                    "automationId": ""
+                }
 
                 if (entryKey) {
                     // Update existing entry using lodash merge to preserve ID/uid if present, 
                     // but overwrite content/keys/etc.
+                    console.log("UPDATING existing function entry")
                     _.merge(entries[entryKey], entryData);
                 } else {
                     // Create new entry
                     // Find a free numeric index
+                    console.log("CREATING new entry for functions")
                     let newIndex = 0;
                     while (entries[String(newIndex)]) newIndex++;
                     
-                    entries[String(newIndex)] = { 
-                        ...entryData, 
-                        id: newIndex, 
-                        uid: newIndex // Ensuring compatibility
+                    entries[String(newIndex)] = {
+                        uid: newIndex, // Ensuring compatibility
+                        ...entryData
                     };
                 }
-                console.log(`Function string: ${funcString}`);
-                console.log(`new WI: ${JSON.stringify(worldbook)}`)
+
+                console.log('---------- MERGE COMPLETE ----------')
+                console.log(JSON.stringify(worldbook[entryKey]))
 
                 return worldbook;
             });
@@ -379,9 +430,9 @@ function App() {
             if (funcs) setDraftFunctions(funcs);
 
             if (!isDataReady) setIsDataReady(true);
-            console.log("SAM UI: Data refreshed via INV event.");
+            console.log("[SAM frontend] Data refreshed via INV event.");
         } catch (e) {
-            console.error("SAM UI Refresh Error:", e);
+            console.error("[SAM frontend] Refresh Error:", e);
         }
     }, [showInterface, isDataReady]);
 
@@ -420,10 +471,12 @@ function App() {
     // --- Heartbeat for Status ---
     useEffect(() => {
         if (!showInterface) return;
-        
+
         const interval = setInterval(() => {
-            eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS);
-        }, 1000);
+            if (sam_get_status() !== "IDLE") {
+                eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS);
+            }
+        }, 2500);
 
         return () => clearInterval(interval);
     }, [showInterface]);
