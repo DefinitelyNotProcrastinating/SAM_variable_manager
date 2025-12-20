@@ -58,14 +58,25 @@ const InputRow = ({ label, type = "text", value, onChange, placeholder }) => (
 
 // --- Sub-Panels ---
 
-const SettingsPanel = ({ settings, setSettings }) => {
-    const handleChange = (key, val) => {
+const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData }) => {
+    
+    // Updates global plugin settings
+    const handleSettingChange = (key, val) => {
         setSettings(prev => ({ ...prev, [key]: val }));
     };
 
-    const handleSaveSettings = async () => {
+    // Updates Character/State specific data
+    const handleDataChange = (key, val) => {
+        setData(prev => ({ ...prev, [key]: val }));
+    };
+
+    const handleSaveAll = async () => {
         try {
+            // 1. Save Plugin Settings
             const generalSettings = { ...settings };
+            // Remove summary specific strings from general save loop if handled elsewhere, 
+            // though sam_set_setting handles keys individually usually.
+            // We strip these just to be clean if they are text areas, but sam_set_setting iterates.
             delete generalSettings.summary_frequency;
             delete generalSettings.summary_prompt;
             delete generalSettings.summary_words;
@@ -73,48 +84,62 @@ const SettingsPanel = ({ settings, setSettings }) => {
             for (const key of Object.keys(generalSettings)) {
                 await sam_set_setting(key, generalSettings[key]);
             }
-            toastr.success("General settings saved successfully.");
+
+            // 2. Save State Data (Mutation flags)
+            // This functions as a "Checkpoint" save
+            await onCommitData();
+
+            toastr.success("Settings and Data configuration saved successfully.");
         } catch (e) {
             console.error(e);
-            toastr.error("Error saving general settings: " + e.message);
+            toastr.error("Error saving settings: " + e.message);
         }
     };
 
     return (
         <div className="sam_panel_content">
-            <h3 className="sam_section_title">General Configuration</h3>
+            <h3 className="sam_section_title">Plugin Configuration</h3>
+            <p className="sam_help_text">These settings apply globally to the extension.</p>
             <ToggleSwitch
                 label="Enable SAM"
                 value={settings.enabled}
-                onChange={(v) => handleChange('enabled', v)}
+                onChange={(v) => handleSettingChange('enabled', v)}
             />
+            
+            <h3 className="sam_section_title">Data & State Configuration</h3>
+            <p className="sam_help_text">These settings are saved to the current story state (SAM_data).</p>
             <ToggleSwitch
                 label="Disable Data Type Mutation"
-                value={settings.disable_dtype_mutation}
-                onChange={(v) => handleChange('disable_dtype_mutation', v)}
+                value={!!data.disable_dtype_mutation}
+                onChange={(v) => handleDataChange('disable_dtype_mutation', v)}
             />
             <ToggleSwitch
                 label="Uniquely Identified Paths"
-                value={settings.uniquely_identified}
-                onChange={(v) => handleChange('uniquely_identified', v)}
+                value={!!data.uniquely_identified}
+                onChange={(v) => handleDataChange('uniquely_identified', v)}
             />
 
-            <h3 className="sam_section_title">Checkpointing</h3>
+            <h3 className="sam_section_title">Checkpointing & Generation</h3>
             <ToggleSwitch
                 label="Auto Checkpoint"
                 value={settings.enable_auto_checkpoint}
-                onChange={(v) => handleChange('enable_auto_checkpoint', v)}
+                onChange={(v) => handleSettingChange('enable_auto_checkpoint', v)}
+            />
+            <ToggleSwitch
+                label="Skip WI/AN during Summary"
+                value={settings.skipWIAN_When_summarizing}
+                onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)}
             />
             {settings.enable_auto_checkpoint && (
                 <InputRow
                     label="Checkpoint Frequency (Rounds)"
                     type="number"
                     value={settings.checkpoint_frequency}
-                    onChange={(v) => handleChange('checkpoint_frequency', v)}
+                    onChange={(v) => handleSettingChange('checkpoint_frequency', v)}
                 />
             )}
             <div className="sam_actions" style={{ marginTop: '20px' }}>
-                <button onClick={handleSaveSettings} className="sam_btn sam_btn_primary">Save General Settings</button>
+                <button onClick={handleSaveAll} className="sam_btn sam_btn_primary">Save All Settings</button>
             </div>
         </div>
     );
@@ -528,6 +553,7 @@ function App() {
             await sam_set_setting('summary_frequency', draftSamSettings.summary_frequency);
             await sam_set_setting('summary_prompt', draftSamSettings.summary_prompt);
             await sam_set_setting('summary_words', draftSamSettings.summary_words);
+            await sam_set_setting('skipWIAN_When_summarizing', draftSamSettings.skipWIAN_When_summarizing);
             toastr.success("Summary settings saved.");
         } catch (e) {
             console.error(e);
@@ -640,6 +666,13 @@ function App() {
                                             />
                                         </div>
                                     </div>
+                                    <div className="sam_form_column">
+                                        <ToggleSwitch
+                                            label="Skip WI/AN during Summary"
+                                            value={draftSamSettings.skipWIAN_When_summarizing}
+                                            onChange={(v) => setDraftSamSettings(p => ({...p, skipWIAN_When_summarizing: v}))}
+                                        />
+                                    </div>
                                      <div className="sam_form_column">
                                         <label className="sam_label">Summary Prompt</label>
                                         <textarea
@@ -684,6 +717,9 @@ function App() {
                             <SettingsPanel
                                 settings={draftSamSettings}
                                 setSettings={setDraftSamSettings}
+                                data={draftSamData}
+                                setData={setDraftSamData}
+                                onCommitData={handleCommitData}
                             />
                         )}
                     </div>

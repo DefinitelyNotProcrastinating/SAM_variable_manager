@@ -14,8 +14,8 @@
 
     const DEFAULT_SETTINGS = {
         enabled: true,
-        disable_dtype_mutation: false,
-        uniquely_identified: false,
+        // disable_dtype_mutation: false, // Moved to SAM_data (state)
+        // uniquely_identified: false,   // Moved to SAM_data (state)
         enable_auto_checkpoint: true,
         skipWIAN_When_summarizing: false,
         checkpoint_frequency: 20,
