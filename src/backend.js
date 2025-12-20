@@ -17,6 +17,7 @@
         disable_dtype_mutation: false,
         uniquely_identified: false,
         enable_auto_checkpoint: true,
+        skipWIAN_When_summarizing: false,
         checkpoint_frequency: 20,
         summary_prompt: 'Condense the following chat messages into a concise summary of the most important facts and events. If a previous summary is provided, use it as a base and expand on it with new information. Limit the new summary to {{words}} words or less. Your response should include nothing but the summary.',
         summary_frequency: 30,
@@ -421,7 +422,7 @@
             /** @type {import('../../../../../script.js').GenerateQuietPromptParams} */
             const params = {
                             quietPrompt: fullPromptForAI,
-                            skipWIAN: true,
+                            skipWIAN: settings.skipWIAN_When_summarizing,
                             responseLength: extensionSettings.memory.overrideResponseLength,
                         };
             // 3. Check and handle token limits
