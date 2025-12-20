@@ -5,8 +5,8 @@
     "optional": [],
     "js": "dist/index.js",
     "css": "src/App.css",
-    "author": "Cohee1207",
-    "version": "1.0.1",
-    "homePage": "",
+    "author": "Sam",
+    "version": "2.0.0",
+    "homePage": "https://github.com/DefinitelyNotProcrastinating/SAM_variable_manager",
     "auto_update": true
 }
