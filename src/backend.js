@@ -206,8 +206,10 @@
     // very inelegant. since there is no distinct frontend or backend, just let UI get it.
     // UI will now listen to the other things.
     async function sam_renewVariables(SAM_data){
+
         let curr_variables = await getVariables();
-        if (!curr_variables || !curr_variables.SAM_data){
+
+        if ((!curr_variables) && (!curr_variables.SAM_data)){
             console.log("[SAM] tried to renew, but SAM_data variable not found! Initializing.");
             curr_variables = { SAM_data: {} };
         }
