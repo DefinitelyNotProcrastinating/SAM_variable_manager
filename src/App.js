@@ -8,23 +8,28 @@ import {
     sam_set_data,
     sam_get_settings,
     sam_set_setting,
-    sam_is_in_use
+    sam_is_in_use,
+    sam_summary
 } from './backend.js';
 import './App.css';
-var { eventSource, eventTypes, extensionSettings,saveSettingsDebounced } = SillyTavern.getContext();
 
-    const SAM_EVENTS = {
-        CORE_UPDATED: 'SAM_CORE_UPDATED',            // Emitted by Core when state is updated
-        EXT_ASK_STATUS: 'SAM_EXT_ASK_STATUS',        // Emitted by Extension to ask for status
-        CORE_STATUS_RESPONSE: 'SAM_CORE_STATUS_RESPONSE', // Emitted by Core in response to status ask
-        EXT_COMMIT_STATE: 'SAM_EXT_COMMIT_STATE',       // Emitted by Extension to save a full state object
-        CORE_IDLE: 'SAM_CORE_IDLE', // Emitted by core in response to an ask
-        INV:'SAM_INV' // data invalid. must re-fetch data.
-    };
-// use eventSource.on to make this automatically update. Frontend now listens to events as well
-// this avoids communication
+// Access SillyTavern Context and Global Helper
+var { eventSource, eventTypes } = SillyTavern.getContext();
+var _ = require('lodash');
 
-// --- Helper Components (No changes needed here) ---
+const SAM_EVENTS = {
+    CORE_UPDATED: 'SAM_CORE_UPDATED',
+    EXT_ASK_STATUS: 'SAM_EXT_ASK_STATUS',
+    CORE_STATUS_RESPONSE: 'SAM_CORE_STATUS_RESPONSE',
+    EXT_COMMIT_STATE: 'SAM_EXT_COMMIT_STATE',
+    CORE_IDLE: 'SAM_CORE_IDLE',
+    INV: 'SAM_INV' 
+};
+
+const SAM_FUNCTIONLIB_ID = "__SAM_FUNCTIONLIB__";
+
+// --- Helper Components ---
+
 const ToggleSwitch = ({ label, value, onChange }) => (
     <div className="sam_form_row">
         <label className="sam_label">{label}</label>
@@ -49,7 +54,6 @@ const InputRow = ({ label, type = "text", value, onChange, placeholder }) => (
     </div>
 );
 
-
 // --- Sub-Panels ---
 
 const SettingsPanel = ({ settings, setSettings }) => {
@@ -59,18 +63,18 @@ const SettingsPanel = ({ settings, setSettings }) => {
 
     const handleSaveSettings = async () => {
         try {
-            // Filter out summary-specific settings, as they are saved elsewhere
             const generalSettings = { ...settings };
             delete generalSettings.summary_frequency;
             delete generalSettings.summary_prompt;
+            delete generalSettings.summary_words;
 
             for (const key of Object.keys(generalSettings)) {
                 await sam_set_setting(key, generalSettings[key]);
             }
-            alert("General settings saved successfully.");
+            toastr.success("General settings saved successfully.");
         } catch (e) {
             console.error(e);
-            alert("Error saving general settings: " + e.message);
+            toastr.error("Error saving general settings: " + e.message);
         }
     };
 
@@ -114,14 +118,14 @@ const SettingsPanel = ({ settings, setSettings }) => {
     );
 };
 
-const FunctionEditor = ({ functions, setFunctions }) => {
+const FunctionEditor = ({ functions, setFunctions, onCommit }) => {
     const [selectedIndex, setSelectedIndex] = useState(-1);
 
     const handleAdd = () => {
         const newFunc = {
             func_name: "new_function",
             func_params: [],
-            func_body: "// write code here\nreturn true;",
+            func_body: "// write code here\n// args: state, _, fetch, XMLHttpRequest\nreturn true;",
             timeout: 2000,
             periodic: false,
             network_access: false,
@@ -132,6 +136,7 @@ const FunctionEditor = ({ functions, setFunctions }) => {
     };
 
     const handleDelete = (index) => {
+        if (!window.confirm("Delete this function?")) return;
         const newFuncs = [...functions];
         newFuncs.splice(index, 1);
         setFunctions(newFuncs);
@@ -150,7 +155,7 @@ const FunctionEditor = ({ functions, setFunctions }) => {
         <div className="sam_panel_split">
             <div className="sam_sidebar_list">
                 <div className="sam_list_header">
-                    <span>Functions</span>
+                    <span>Functions (WI)</span>
                     <button className="sam_btn_small" onClick={handleAdd}>+</button>
                 </div>
                 <ul>
@@ -165,6 +170,11 @@ const FunctionEditor = ({ functions, setFunctions }) => {
                         </li>
                     ))}
                 </ul>
+                <div style={{padding: '10px'}}>
+                    <button className="sam_btn sam_btn_primary full_width" onClick={onCommit}>
+                        Save to World Info
+                    </button>
+                </div>
             </div>
             <div className="sam_detail_view">
                 {selectedFunc ? (
@@ -237,148 +247,238 @@ const FunctionEditor = ({ functions, setFunctions }) => {
 function App() {
     const [showInterface, setShowInterface] = useState(false);
     const [activeTab, setActiveTab] = useState('DATA');
+    
     const [draftSamData, setDraftSamData] = useState({});
     const [draftSamSettings, setDraftSamSettings] = useState({});
-    const [liveSamData, setLiveSamData] = useState({});
+    const [draftFunctions, setDraftFunctions] = useState([]);
+    
     const [summaries, setSummaries] = useState("");
     const [isDataReady, setIsDataReady] = useState(false);
     const [isBusy, setIsBusy] = useState(false);
     const [samStatusText, setSamStatusText] = useState("IDLE");
+    
     const [portalContainer, setPortalContainer] = useState(null);
     const nodeRef = useRef(null);
 
-    const refreshDataAndSummary = useCallback(async () => {
-        if (! await sam_is_in_use()) {
-            console.log("SAM UI: Refresh skipped, SAM is not active.");
+    // --- Helpers for World Info Functions ---
+    const getFunctionsFromWI = async () => {
+        try {
+            const context = SillyTavern.getContext();
+            const charId = context.characterId;
+            if (!context.characters[charId]) return [];
+
+            const worldInfoName = context.characters[charId].data.extensions.world;
+            if (!worldInfoName) return [];
+
+            const wiData = await context.loadWorldInfo(worldInfoName);
+            if (!wiData || !wiData.entries) return [];
+
+            // Find the function library entry using lodash find on the entries object values
+            const funcEntry = _.find(wiData.entries, (entry) => 
+                entry.comment === SAM_FUNCTIONLIB_ID || entry.uid === SAM_FUNCTIONLIB_ID
+            );
+            
+            if (funcEntry && funcEntry.content) {
+                try {
+                    const parsed = JSON.parse(funcEntry.content);
+                    return Array.isArray(parsed) ? parsed : [];
+                } catch (e) {
+                    console.error("SAM: Failed to parse Function Lib from WI", e);
+                    return [];
+                }
+            }
+            return [];
+        } catch (e) {
+            console.error("SAM: Error fetching functions from WI", e);
+            return [];
+        }
+    };
+
+    const saveFunctionsToWI = async (functions) => {
+        const context = SillyTavern.getContext();
+        const charId = context.characterId;
+        const character = context.characters[charId];
+        const worldInfoName = character.data.extensions.world;
+
+        if (!worldInfoName) {
+            toastr.error("No World Info file associated with this character. Please create one first.");
             return;
         }
 
-        const rawData = await sam_get_data();
-        if (rawData) {
-            if (!rawData.static) rawData.static = {};
-            if (!rawData.func) rawData.func = [];
-            if (!rawData.responseSummary) rawData.responseSummary = [];
-            
-            setLiveSamData(rawData);
-            setSummaries(rawData.responseSummary.join('\n'));
-            
-            // Sync draft data only if the UI is not open to avoid overwriting user edits.
-            if (!showInterface) {
-                setDraftSamData(rawData);
-            }
-            console.log("SAM UI: Data refreshed from backend.");
+        const funcString = JSON.stringify(functions, null, 2);
+
+        try {
+            // Using TavernHelper.updateWorldbookWith to safely update the specific entry
+            await TavernHelper.updateWorldbookWith(worldInfoName, (worldbook) => {
+                const entries = worldbook.entries;
+                
+                // Locate the key of the existing entry
+                const entryKey = _.findKey(entries, (entry) => 
+                    entry.comment === SAM_FUNCTIONLIB_ID
+                );
+
+                const entryData = {
+                    keys: [SAM_FUNCTIONLIB_ID, "sam_functions"],
+                    content: funcString,
+                    comment: SAM_FUNCTIONLIB_ID,
+                    enabled: false,
+                    constant: false,
+                    position: 0 
+                };
+
+                if (entryKey) {
+                    // Update existing entry using lodash merge to preserve ID/uid if present, 
+                    // but overwrite content/keys/etc.
+                    _.merge(entries[entryKey], entryData);
+                } else {
+                    // Create new entry
+                    // Find a free numeric index
+                    let newIndex = 0;
+                    while (entries[String(newIndex)]) newIndex++;
+                    
+                    entries[String(newIndex)] = { 
+                        ...entryData, 
+                        id: newIndex, 
+                        uid: newIndex // Ensuring compatibility
+                    };
+                }
+
+                return worldbook;
+            });
+
+            toastr.success("Functions saved to World Info Library.");
+        } catch (e) {
+            console.error(e);
+            toastr.error("Failed to save functions to WI.");
         }
-    }, [showInterface]); // Dependency on showInterface is important here
+    };
 
-    // [MODIFIED] Use the registration callback instead of eventSource directly
+    // --- Data Loading & refreshing ---
+
+    const refreshData = useCallback(async () => {
+        if (!await sam_is_in_use()) {
+            return;
+        }
+
+        try {
+            const rawData = await sam_get_data();
+            const settings = await sam_get_settings();
+            const funcs = await getFunctionsFromWI();
+
+            if (rawData) {
+                if (!rawData.static) rawData.static = {};
+                
+                if (!showInterface) {
+                    setDraftSamData(rawData);
+                    setSummaries((rawData.responseSummary || []).join('\n'));
+                }
+            }
+            
+            if (settings) setDraftSamSettings(settings);
+            if (funcs) setDraftFunctions(funcs);
+
+            if (!isDataReady) setIsDataReady(true);
+            console.log("SAM UI: Data refreshed via INV event.");
+        } catch (e) {
+            console.error("SAM UI Refresh Error:", e);
+        }
+    }, [showInterface, isDataReady]);
+
+    // --- Event Listeners ---
+
     useEffect(() => {
-        // Define the handler that the backend will call
-        const handleBackendUpdate = () => {
-            console.log("SAM UI: Received update signal from backend.");
-            refreshDataAndSummary();
+        const onInvalidate = () => {
+            refreshData();
         };
 
-        // Register it
-        sam_register_update_callback(handleBackendUpdate);
-
-        // No cleanup is strictly needed as it's a singleton pattern in the backend,
-        // but it's good practice in React to return a cleanup function.
-        return () => {
-            // Unregister if an unregister function is ever added to the backend
-            // sam_unregister_update_callback(handleBackendUpdate);
+        const onStatusResponse = (data) => {
+            if (data && data.state) {
+                setSamStatusText(data.state);
+                const busyStates = ["AWAIT_GENERATION", "PROCESSING"];
+                setIsBusy(busyStates.includes(data.state));
+            }
         };
-    }, [refreshDataAndSummary]);
 
+        eventSource.on(SAM_EVENTS.INV, onInvalidate);
+        eventSource.on(SAM_EVENTS.CORE_STATUS_RESPONSE, onStatusResponse);
 
-    useEffect(() => {
+        refreshData();
+
         const container = document.createElement('div');
         container.id = 'sam-portal-root';
         document.body.appendChild(container);
         setPortalContainer(container);
 
         return () => {
-            if (container.parentNode) {
-                container.parentNode.removeChild(container);
-            }
+            //eventSource.off(SAM_EVENTS.INV, onInvalidate);
+            //eventSource.off(SAM_EVENTS.CORE_STATUS_RESPONSE, onStatusResponse);
+            if (container.parentNode) container.parentNode.removeChild(container);
         };
-    }, []);
+    }, [refreshData]);
 
-    const loadInitialData = useCallback(async (showAlerts = false) => {
-        try {
-            const rawData = await sam_get_data();
-            const settings = await sam_get_settings();
-            
-            if (rawData) {
-                setDraftSamData(rawData);
-                setLiveSamData(rawData);
-                setSummaries((rawData.responseSummary || []).join('\n'));
-            }
-            setDraftSamSettings(settings || {});
-            
-            if (!isDataReady) setIsDataReady(true);
-        } catch (e) {
-            console.error("SAM UI Error during initial load:", e);
-            if (showAlerts) alert("Failed to load SAM data/settings.");
-        }
-    }, [isDataReady]);
+    // --- Heartbeat for Status ---
+    useEffect(() => {
+        if (!showInterface) return;
+        
+        const interval = setInterval(() => {
+            eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS);
+        }, 1000);
 
-    const handleRefresh = () => {
-        if (window.confirm("Are you sure you want to refresh? This will discard any unsaved changes.")) {
-             sam_get_data().then(data => {
-                if(data) {
-                    setDraftSamData(data);
-                    setLiveSamData(data);
-                    setSummaries((data.responseSummary || []).join('\n'));
-                }
-             });
-             sam_get_settings().then(setDraftSamSettings);
-             alert("UI has been refreshed with the latest saved data.");
+        return () => clearInterval(interval);
+    }, [showInterface]);
+
+
+    // --- Handlers ---
+
+    const handleManualRefresh = () => {
+        if (window.confirm("Refresh data? Unsaved changes will be lost.")) {
+            refreshData();
+            toastr.info("UI Refreshed.");
         }
     };
 
-    useEffect(() => {
-        if (showInterface) {
-            loadInitialData(true);
-        } else {
-            setIsDataReady(false);
-            setIsBusy(false);
+    const handleCommitData = async () => {
+        try {
+            const cleanData = { ...draftSamData };
+            cleanData.responseSummary = summaries.split('\n').filter(l => l.trim() !== "");
+            
+            await sam_set_data(cleanData);
+            toastr.success("Data committed to State.");
+        } catch (e) {
+            console.error(e);
+            toastr.error("Error committing data: " + e.message);
         }
-    }, [showInterface, loadInitialData]);
+    };
 
-    useEffect(() => {
-        if (!showInterface || !isDataReady) return;
-
-        const intervalId = setInterval(async () => {
-            try {
-                const currentState = await sam_get_state();
-                const busyStates = ["AWAIT_GENERATION", "PROCESSING"];
-                const isCurrentlyBusy = busyStates.includes(currentState);
-
-                setIsBusy(isCurrentlyBusy);
-                setSamStatusText(currentState);
-
-                if (!isCurrentlyBusy) {
-                    const rawData = await sam_get_data();
-                    if(rawData) setLiveSamData(rawData);
-                }
-            } catch (e) {
-                console.error("SAM UI periodic refresh failed:", e);
-                clearInterval(intervalId);
-            }
-        }, 2000);
-
-        return () => clearInterval(intervalId);
-    }, [showInterface, isDataReady]);
+    const handleCommitFunctions = async () => {
+        if (window.confirm("This will overwrite the Function Library in World Info. Continue?")) {
+            await saveFunctionsToWI(draftFunctions);
+        }
+    };
 
     const handleSummaryChange = (e) => {
-        const val = e.target.value;
-        setSummaries(val);
-        const arr = val.split('\n').filter(line => line.trim() !== "");
-        setDraftSamData(prev => ({ ...prev, responseSummary: arr }));
+        setSummaries(e.target.value);
     };
-    
-    const handleSettingsChange = (key, val) => {
-        setDraftSamSettings(prev => ({...prev, [key]: val}));
+
+    const handleSaveSummarySettings = async () => {
+        try {
+            await sam_set_setting('summary_frequency', draftSamSettings.summary_frequency);
+            await sam_set_setting('summary_prompt', draftSamSettings.summary_prompt);
+            await sam_set_setting('summary_words', draftSamSettings.summary_words);
+            toastr.success("Summary settings saved.");
+        } catch (e) {
+            console.error(e);
+            toastr.error("Error saving summary settings.");
+        }
+    };
+
+    const handleTriggerSummary = async () => {
+        if (isBusy) {
+            toastr.warning("Core is busy. Cannot run summary now.");
+            return;
+        }
+        toastr.info("Triggering manual summary...");
+        await sam_summary();
     };
 
     const handleJsonChange = (content) => {
@@ -386,84 +486,8 @@ function App() {
             setDraftSamData(content.jsObject);
         }
     };
-    
-    const handleSaveSummarySettings = async () => {
-        try {
-            await sam_set_setting('summary_frequency', draftSamSettings.summary_frequency);
-            await sam_set_setting('summary_prompt', draftSamSettings.summary_prompt);
-            alert("Summary settings saved successfully.");
-        } catch (e) {
-             console.error(e);
-            alert("Error saving summary settings: " + e.message);
-        }
-    };
 
-    const handleCommitData = async () => {
-        try {
-            await sam_set_data(draftSamData);
-            alert("SAM data and summaries saved successfully.");
-            setLiveSamData(draftSamData);
-            setShowInterface(false);
-        } catch (e) {
-            console.error(e);
-            alert("Error saving data: " + e.message);
-        }
-    };
-
-    // at the present, we still wait for TavernHelper.
-    // will update this later
-    // requires one new button on the function tab.
-    const commitFunctions = async () => {
-
-        // save the functions: we will modify a WI to do this.
-        await TavernHelper.updateWorldbookWith(
-            // update function here
-        );
-    }
-
-    const commitData = async () => {
-        // commit the data
-    }
-
-    const commitBaseSettings = async() => {
-        // commit base settings
-    } 
-
-    const handlers = {
-
-        handleInvalidate : async()=> {
-            // somebody invalidated the data (swipe / edit... )
-            // must refresh. This means we get variables again
-
-            let correct_sam_data = await sam_get_data();
-
-            // this forces the update UI function to be later than the load.
-        },
-        handleChatChanged : async() => {
-            // somebody changed the chat...
-            // must refresh.
-
-            // previously we can parse from chat, but when ISA changes it doesn't matter
-            // therefore we must get some IPC going!
-
-            // INV already handles this as core broadcasts INV
-            // when this listens to INV it knows that it must rewrite the data of character
-            
-            // first, see if it has it enabled
-            let enabled = await sam_is_in_use();
-
-            // if not enabled, then we will be removing the displayed data and make the commit data button invalid.
-            // commit setting button is still valid.
-
-            // if enabled, the commit data button will be set to valid.
-
-
-
-        }
-
-
-
-    }
+    // --- Render ---
 
     const modalContent = (
         <div className="sam_modal_overlay">
@@ -495,7 +519,9 @@ function App() {
                     <div className="sam_content_area">
                         {activeTab === 'DATA' && (
                             <div className={`sam_panel_content ${isBusy ? 'disabled' : ''}`}>
-                                <h4 className="sam_panel_label">Raw JSON State {isBusy ? "(Locked during generation)" : ""}</h4>
+                                <h4 className="sam_panel_label">
+                                    Raw JSON State {isBusy ? "(Locked - Core Busy)" : ""}
+                                </h4>
                                 <div className="sam_json_wrapper">
                                     {isDataReady ? (
                                         <JSONEditor
@@ -513,34 +539,58 @@ function App() {
                                         <div className="sam_empty_state">Loading data...</div>
                                     )}
                                 </div>
+                                <div className="sam_actions" style={{marginTop: '10px'}}>
+                                    <button 
+                                        onClick={handleCommitData} 
+                                        className="sam_btn sam_btn_primary"
+                                        disabled={isBusy}
+                                    >
+                                        Commit Data Changes
+                                    </button>
+                                </div>
                             </div>
                         )}
+
                         {activeTab === 'SUMMARY' && (
                             <div className="sam_panel_content full_height layout_column">
                                 <div className="sam_summary_settings_section">
-                                    <h3 className="sam_section_title">Summary Generation Settings</h3>
-                                    <div className="sam_form_row sam_inline_input">
-                                         <label className="sam_label">Summary Frequency: once per</label>
-                                         <input
-                                            type="number"
-                                            className="sam_input small_input"
-                                            value={draftSamSettings.summary_frequency || ''}
-                                            onChange={(e) => handleSettingsChange('summary_frequency', Number(e.target.value))}
-                                            placeholder="5"
-                                        />
-                                        <label className="sam_label">responses</label>
+                                    <h3 className="sam_section_title">Summary Configuration</h3>
+                                    <div className="sam_form_grid">
+                                        <div className="sam_form_row sam_inline_input">
+                                            <label className="sam_label">Frequency (responses)</label>
+                                            <input
+                                                type="number"
+                                                className="sam_input small_input"
+                                                value={draftSamSettings.summary_frequency || ''}
+                                                onChange={(e) => setDraftSamSettings(p => ({...p, summary_frequency: Number(e.target.value)}))}
+                                                placeholder="30"
+                                            />
+                                        </div>
+                                        <div className="sam_form_row sam_inline_input">
+                                            <label className="sam_label">Max Words</label>
+                                            <input
+                                                type="number"
+                                                className="sam_input small_input"
+                                                value={draftSamSettings.summary_words || ''}
+                                                onChange={(e) => setDraftSamSettings(p => ({...p, summary_words: Number(e.target.value)}))}
+                                                placeholder="150"
+                                            />
+                                        </div>
                                     </div>
                                      <div className="sam_form_column">
                                         <label className="sam_label">Summary Prompt</label>
                                         <textarea
                                             className="sam_textarea_medium"
                                             value={draftSamSettings.summary_prompt || ''}
-                                            onChange={(e) => handleSettingsChange('summary_prompt', e.target.value)}
+                                            onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))}
                                             placeholder="Enter the prompt for generating summaries..."
                                         />
                                     </div>
                                     <div className="sam_actions">
-                                        <button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary">Save Summary Settings</button>
+                                        <button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary">Save Config</button>
+                                        <button onClick={handleTriggerSummary} className="sam_btn sam_btn_secondary" disabled={isBusy}>
+                                            Generate Summary Now
+                                        </button>
                                     </div>
                                 </div>
                                 <hr className="sam_divider" />
@@ -551,14 +601,22 @@ function App() {
                                     onChange={handleSummaryChange}
                                     placeholder="One summary per line..."
                                 />
+                                <div className="sam_actions" style={{marginTop:'5px'}}>
+                                     <button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy}>
+                                        Save Summaries (Commit Data)
+                                    </button>
+                                </div>
                             </div>
                         )}
+
                         {activeTab === 'FUNCS' && (
                             <FunctionEditor
-                                functions={draftSamData.func || []}
-                                setFunctions={(newFuncs) => setDraftSamData(prev => ({ ...prev, func: newFuncs }))}
+                                functions={draftFunctions}
+                                setFunctions={setDraftFunctions}
+                                onCommit={handleCommitFunctions}
                             />
                         )}
+
                         {activeTab === 'SETTINGS' && (
                             <SettingsPanel
                                 settings={draftSamSettings}
@@ -569,26 +627,16 @@ function App() {
 
                     <div className="sam_modal_footer">
                         <div className="sam_status_bar">
-                            Status: {draftSamSettings.enabled ? "Active" : "Disabled"} | State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span>
+                            Status: {draftSamSettings.enabled ? "Active" : "Disabled"} | Core State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span>
                         </div>
                         <div className="sam_actions">
-                            <button onClick={handleRefresh} className="sam_btn sam_btn_secondary">Refresh UI</button>
-                            <button onClick={() => setShowInterface(false)} className="sam_btn sam_btn_secondary">Cancel</button>
-                            <button onClick={handleCommitData} className="sam_btn sam_btn_primary">Commit Data Changes</button>
+                            <button onClick={handleManualRefresh} className="sam_btn sam_btn_secondary">Refresh UI</button>
+                            <button onClick={() => setShowInterface(false)} className="sam_btn sam_btn_secondary">Close</button>
                         </div>
                     </div>
                 </div>
             </Draggable>
-            <script>
-                {
-                    (() => {
-                        eventSource.on(eventTypes.CHAT_CHANGED, handlers.handleChatChanged);
-                        eventSource.on(SAM_EVENTS.INV, handlers.handleInvalidate );
-                    })()
-                }
-            </script>
         </div>
-
     );
 
     return (
@@ -601,9 +649,6 @@ function App() {
             {showInterface && portalContainer && ReactDOM.createPortal(modalContent, portalContainer)}
         </>
     );
-    
 }
-
-
 
 export default App;

@@ -20,7 +20,7 @@
         summary_prompt: 'Condense the following chat messages into a concise summary of the most important facts and events. If a previous summary is provided, use it as a base and expand on it with new information. Limit the new summary to {{words}} words or less. Your response should include nothing but the summary.',
         summary_frequency: 30,
         summary_words: 150
-    }
+    };
 
     let sam_settings = { ...DEFAULT_SETTINGS };
 
@@ -126,28 +126,39 @@
 
     async function checkWorldInfoActivation() {
         try {
-            const wi = await getCurrentWorldbookName();
+            var wi;
+            try{
+             wi = await getCurrentWorldbookName();
+            }catch (e){
+                logger.info(`[SAM util] WI not found. Presumably no character is loaded.`);
+                return;
+            }
+
+            if (!wi){
+                logger.info(`[SAM util] WI not found. Presumably no character is loaded.`)
+                return;
+            }
             
             let wiidx = 0;
             let verified_go_flag = false;
             while (wi.entries[`${wiidx}`]){
                 if (wi.entries[`${wiidx}`].comment === SAM_ACTIVATION_KEY) {
                     verified_go_flag = true;
-                    logger.info(`[SAM] Activation Key "${SAM_ACTIVATION_KEY}" ${go_flag ? 'FOUND' : 'MISSING'}. Script is ${go_flag ? 'ACTIVE' : 'DORMANT'}.`);
+                    logger.info(`[SAM util] Activation Key "${SAM_ACTIVATION_KEY}" ${go_flag ? 'FOUND' : 'MISSING'}. Script is ${go_flag ? 'ACTIVE' : 'DORMANT'}.`);
                     break;
                 }
                 wiidx ++;
             }
 
             if (!verified_go_flag){
-                logger.info(`[SAM] Did not find activation key in card`);
+                logger.info(`[SAM util] Did not find activation key in card`);
             }
             go_flag = verified_go_flag;
 
             
 
         } catch (e) {
-            logger.error("Error checking world info activation:", e);
+            logger.error("[SAM util] Error checking world info activation:", e);
             go_flag = false;
         }
     }
@@ -389,7 +400,12 @@
     
             const promptTemplate = substituteParamsExtended(settings.summary_prompt, { words: settings.summary_words });
             let fullPromptForAI = `${textForSummarization}\n\nINSTRUCTIONS:\n${promptTemplate}`;
-    
+            /** @type {import('../../../../../script.js').GenerateQuietPromptParams} */
+            const params = {
+                            quietPrompt: fullPromptForAI,
+                            skipWIAN: true,
+                            responseLength: extensionSettings.memory.overrideResponseLength,
+                        };
             // 3. Check and handle token limits
             const maxContextTokens = await getMaxContextSize();
             const promptBudget = maxContextTokens - (settings.summary_words * 1.5); // Buffer for response
@@ -414,7 +430,7 @@
     
             // 4. Call the AI to get the summary
             logger.info("[SAM] Sending request to AI for summarization.");
-            const summary_result = await generateQuietPrompt(fullPromptForAI);
+            const summary_result = await generateQuietPrompt(params);
     
             if (!summary_result || summary_result.trim().length === 0) {
                 logger.warn("[SAM] Summary generation returned an empty result.");
@@ -433,16 +449,34 @@
             updated_data.responseSummary.push(summary_result.trim());
     
             if (currStatus !== STATES.IDLE) {
-                // Logic to wait for IDLE state can be implemented here
+                logger.info("[SAM] Core is busy. Waiting for IDLE state before saving summary checkpoint.");
+                const maxWaitTime = 150000; // 150 seconds timeout
+                const checkInterval = 5000; // Check every 5 seconds
+                const startTime = Date.now();
+
+                while (currStatus !== STATES.IDLE) {
+                    if (Date.now() - startTime > maxWaitTime) {
+                        logger.error("[SAM] Timed out waiting for IDLE state. Summary will be saved on next successful operation.");
+                        toastr.error("Timed out waiting for core to be idle. Summary not saved as checkpoint.");
+                        return; // Exit the function to prevent saving while busy
+                    }
+                    
+                    logger.info(`[SAM] Current status is ${currStatus}. Requesting status update.`);
+                    await eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS);
+
+                    // Wait for a bit before checking again
+                    await new Promise(resolve => setTimeout(resolve, checkInterval));
+                }
+                logger.info("[SAM] Core is now IDLE. Proceeding to save summary.");
             }
     
             logger.info("[SAM] Saving new summary as a checkpoint.");
             await sam_set_data(updated_data);
-            toastr.success("Chat summary updated.");
+            toastr.success("[SAM util] Chat summary updated.");
     
         } catch (error) {
             logger.error("[SAM] An error occurred during the summary process.", error);
-            toastr.error("Failed to generate chat summary.");
+            toastr.error("[SAM util] Failed to generate chat summary.");
         }
     }
 
