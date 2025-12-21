@@ -394,17 +394,14 @@
             const settings = loadSamSettings();
             const context = SillyTavern.getContext();
             const chat = context.chat;
-
-            checkWorldInfoActivation();
-            if (!go_flag){
-                return;
-            }
     
             if (chat.length === 0) {
                 logger.info("[SAM] No chat messages to summarize.");
                 return;
             }
-            if 
+
+            checkWorldInfoActivation();
+            if (!go_flag){return;}
     
             // 1. Get previous data and messages to summarize
             let current_data = await getVariables();
