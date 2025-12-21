@@ -168,12 +168,12 @@
 
 
             if (!verified_go_flag){
-                logger.info(`[SAM util] Did not find activation key in card`);
+                //logger.info(`[SAM util] Did not find activation key in card`);
                 let found_entries = [];
                 for (let item of wi_entry_arr){
                     found_entries.push(item.comment);
                 }
-                logger.info(`[SAM util] found ${JSON.stringify(found_entries)}`)
+                //logger.info(`[SAM util] found ${JSON.stringify(found_entries)}`)
             }
             go_flag = verified_go_flag;
 
