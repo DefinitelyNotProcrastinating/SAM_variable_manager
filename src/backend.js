@@ -429,7 +429,7 @@
                             responseLength: extensionSettings.memory.overrideResponseLength,
                         };
             // 3. Check and handle token limits
-            const maxContextTokens = 100000;
+            const maxContextTokens = 1000000;
             const promptBudget = maxContextTokens - (settings.summary_words * 1.5); // Buffer for response
     
             let tokenCount = await getTokenCountAsync(fullPromptForAI);
