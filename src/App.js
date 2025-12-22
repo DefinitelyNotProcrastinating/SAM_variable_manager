@@ -550,7 +550,7 @@ function App() {
 
         // Core ST events to ensure robustness
         // Fired when generation is about to start
-        eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onInvalidate);
+        //eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onInvalidate);
         // Fired when user swaps character or chat - Essential for reload
         eventSource.on(eventTypes.CHAT_CHANGED, onInvalidate);
 
