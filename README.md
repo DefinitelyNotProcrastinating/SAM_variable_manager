@@ -1,75 +1,95 @@
-# Situational Awareness Manager (SAM) Extension
+# Situational Awareness Manager (SAM) Extension for SillyTavern
 
-**Situational Awareness Manager (SAM)** 是一个专为 SillyTavern 设计的高级扩展插件。它是 SAM 核心脚本（Core Script）的可视化管理前端与辅助工具。
-核心脚本位于此处：
-https://github.com/DefinitelyNotProcrastinating/ST_var_manager/core.js
+**SAM Extension** 是 SillyTavern 的一个高级辅助插件，旨在为您的角色提供持久且动态的“态势感知”能力。
 
-本插件旨在赋予 AI 角色更强的“情境感知”能力，通过可视化的方式管理 AI 的内部状态（State）、自动处理剧情总结、以及编辑存储在世界书（World Info）中的逻辑函数库。
+它是 **SAM Core Script** 的后端伴侣，负责处理繁重的自动化任务：生成分层摘要、维护动态知识库（Database），并提供可视化的管理界面。
+
+> [!IMPORTANT]
+> **本插件无法独立工作**。它是核心逻辑脚本的扩展载体。
+> 请务必先下载并加载核心脚本：👉 **[core.js的链接](https://github.com/DefinitelyNotProcrastinating/ST_var_manager/blob/main/core.js)**
+
+---
 
 ## ✨ 主要功能
 
-### 1. 🧠 状态管理 (Data State Manager)
-*   **可视化 JSON 编辑**：直接查看和编辑 AI 当前的内部状态（`SAM_data`）。
-*   **实时同步**：支持从后端获取最新状态，并手动提交更改（Commit）到当前的对话历史中。
-*   **类型保护**：提供选项防止数据类型突变（Disable Data Type Mutation）。
+*   **自动摘要 (Auto-Summarization)**:
+    *   基于 FSM (有限状态机) 自动监测聊天进度。
+    *   生成分层摘要（L1/L2/L3），将旧的聊天记录转化为连贯的剧情梗概。
+    *   支持自定义摘要触发频率和 Prompt。
+*   **动态数据库 (Dynamic Database)**:
+    *   自动提取对话中的新设定（新角色、地点、物品），并将其转化为结构化的 `@.insert()` 指令存储。
+    *   利用向量化或关键词匹配（取决于具体实现）在需要时调取相关设定。
+*   **可视化仪表盘 (React UI)**:
+    *   **摘要管理**: 查看、编辑或删除已生成的摘要。
+    *   **数据概览**: 直接查看和修改底层的 JSON 数据 (SAM_data)。
+    *   **Regex 过滤器**: 配置正则表达式，在摘要前清洗聊天记录（如去除心理活动或系统提示）。
+    *   **设置面板**: 调整检查点频率、开关插件等。
+*   **便捷宏 (Macros)**:
+    *   提供两个核心宏，方便在 Prompt 或世界书中直接注入记忆和设定。
 
-### 2. 📝 智能总结系统 (Auto Summarization)
-*   **自动触发**：根据设定的对话轮数频率（如每 30 条消息），自动在后台生成剧情总结。
-*   **自定义提示词**：完全可配置的总结 Prompt，支持字数限制（Word Count）。
-*   **静默生成**：使用 SillyTavern 的 Quiet Prompt 技术，不干扰当前对话。
-*   **上下文优化**：支持在生成总结时跳过 World Info / Author's Note，以节省 Token 并聚焦于对话本身。
+---
 
-### 3. 🛠️ 函数库编辑器 (Function Library)
-*   **World Info 集成**：直接在插件内编写 JavaScript 函数，并将其自动保存/注入到角色的世界书（World Info）中。
-*   **高级配置**：为每个函数单独设置超时时间（Timeout）、执行顺序（Order）、周期性执行（Periodic Eval）以及网络访问权限（Network Access）。
+## 📦 安装方法
 
-### 4. ⚙️ 核心控制与设置
-*   **自动检查点 (Auto Checkpoint)**：定期将 AI 状态保存到聊天记录中，方便回溯。
-*   **状态监控**：实时显示 SAM Core 的运行状态（IDLE, PROCESSING, AWAIT_GENERATION）。
-*   **防呆设计**：当检测不到角色卡中的 SAM 标识符时，自动锁定界面以防误操作。
+1.  打开 SillyTavern 的 **Extensions** (扩展) 选项卡。
+2.  点击 **Install Extension**。
+3.  输入本仓库的 URL 并安装。
+4.  安装完成后，确保插件已启用。
 
-## 📦 安装与依赖
+---
 
-### 必要依赖
-本插件依赖于 **[JS-slash-runner](https://github.com/n0vi028/JS-slash-runner)** (by n0vi028) 来执行脚本逻辑。请确保你的 SillyTavern 已安装并启用了该插件。
-本插件是 [SAM core](https://github.com/DefinitelyNotProcrastinating/ST_var_manager/core.js) 的前端/编辑器。请确保卡内附带了这个脚本。
+## ⚙️ 配置与使用
 
-## 🚀 使用指南
+### 1. 激活插件 (World Info 绑定)
+为了防止插件在不相关的聊天中误触发，SAM 需要一个“锚点”。
+*   在 SillyTavern 中为您当前的角色或世界书创建一个新的 **World Info (世界书)** 条目。
+*   在该条目的 **Comment (注释)** 字段中填入以下标识符：
+    ```text
+    __SAM_IDENTIFIER__
+    ```
+*   插件检测到此标识符后，状态栏将从 "MISSING ID" 变为 "IDLE" 或 "Active"。
 
-### 1. 激活检测
-插件启动时会自动检测当前加载的角色 World Info 中是否存在 `__SAM_IDENTIFIER__`。
-*   **未检测到**：插件界面会显示警告，大部分功能将被锁定。
-*   **检测成功**：状态栏显示 "Active"，所有功能解锁。
+### 2. 注入宏 (Macros)
+本插件注册了两个宏，您可以在 **World Info**、**Author's Note** 或 **Main Prompt** 中使用它们来让 AI 读取记忆：
 
-### 2. 界面概览
-插件会在 SillyTavern 的扩展栏（Extensions Panel）中添加一个 **SAM Extension** 抽屉。点击 "Open Configuration Manager" 即可打开悬浮主窗口。
+| 宏名称 | 描述 |
+| :--- | :--- |
+| `{{SAM_serialized_memory}}` | 输出当前已生成的剧情摘要序列（L1/L2/L3）。 |
+| `{{SAM_serialized_db}}` | 输出从对话中自动提取并存储的设定/知识库条目。 |
 
-#### 💾 Data (数据面板)
-*   这里显示原本隐藏在聊天记录中的 JSON 数据块。
-*   你可以手动修改数值（例如角色的心情值、背包物品等），然后点击 **Commit Data Changes** 保存。
+**示例用法 (推荐添加到 Main Prompt 或 Character Note):**
 
-#### 📜 Summary (总结面板)
-*   配置总结频率（Frequency）和最大字数（Max Words）。
-*   查看历史生成的总结列表（Saved Response Summaries）。
-*   点击 **Generate Summary Now** 手动触发一次总结。
+```text
+[长期记忆]
+{{SAM_serialized_memory}}
 
-#### 🔧 Functions (函数面板)
-*   管理角色的逻辑脚本。
-*   点击 `+` 新增函数，编辑 JS 代码。
-*   点击 **Save to World Info** 将函数库写入当前角色的世界书。
+[当前已知情报]
+{{SAM_serialized_db}}
+```
 
-#### ⚙️ Settings (设置面板)
-*   全局开关 SAM 功能。
-*   配置自动检查点频率。
-*   切换 "Uniquely Identified Paths" 等高级数据选项。
+### 3. 管理界面
+点击扩展栏中的 **SAM Extension** 抽屉，然后点击 **Open Configuration Manager** 打开悬浮窗口。
+*   **Summary**: 监控摘要生成进度，手动触发摘要，或修补 AI 生成的摘要内容。
+*   **Regex**: 添加规则以过滤掉不希望进入摘要的内容（例如 `（.*）` 过滤括号内的动作）。
+*   **Data**: 面向高级用户，直接编辑 JSON 状态树。
+
+---
+
+## 🤖 工作原理
+
+1.  **监控**: 插件会在后台静默运行，根据设定的 `l2_summary_period` 监测聊天消息数量。
+2.  **生成**: 当达到阈值时，它会暂停主线程，打包最近的聊天记录，并发送给 LLM 进行处理。
+3.  **解析**: LLM 返回的内容会被解析为两部分：
+    *   **L2摘要**: 添加到 `{{SAM_serialized_memory}}`。
+    *   **插入指令**: 格式为 `@.insert(key="...", content="...", keywords=[...])` 的内容会被提取并存入数据库，供 `{{SAM_serialized_db}}` 调用。
+4.  **更新**: 聊天记录会被更新，插入一个隐藏的数据块（Data Block），确保状态在页面刷新后依然保留。
+
+---
 
 ## ⚠️ 注意事项
 
-*   **手动刷新**：虽然插件会监听 Core 事件，但如果你手动修改了聊天记录或切换了聊天，建议点击界面下方的 **Refresh UI** 确保数据同步。
-*   **Core 繁忙状态**：当 SAM Core 正在处理数据或生成时（状态非 IDLE），为了数据安全，编辑功能会被临时锁定。
-
-## 🤝 贡献与反馈
-
-如果你在使用过程中遇到 BUG 或有功能建议，欢迎提交 Issue。
+*   **Core Script**: 再次提醒，请配合 [core.js的链接](https://github.com/DefinitelyNotProcrastinating/ST_var_manager/blob/main/core.js) 使用以获得完整的逻辑支持。
+*   **Token 消耗**: 生成摘要会产生额外的后台请求，请留意您的 API 使用量。
+*   **数据备份**: 虽然插件有自动 Checkpoint 功能，但在进行大规模手动修改 Data JSON 前，建议备份您的聊天记录。
 
 ---
