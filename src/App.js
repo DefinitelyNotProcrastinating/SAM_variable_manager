@@ -24,11 +24,11 @@ const SAM_EVENTS = {
     CORE_STATUS_RESPONSE: 'SAM_CORE_STATUS_RESPONSE',
     EXT_COMMIT_STATE: 'SAM_EXT_COMMIT_STATE',
     CORE_IDLE: 'SAM_CORE_IDLE',
-    INV: 'SAM_INV' 
+    INV: 'SAM_INV'
 };
 
-// directly store it under identifier.
 const SAM_FUNCTIONLIB_ID = "__SAM_IDENTIFIER__";
+const SCRIPT_VERSION = "5.2.0"; // Match backend version
 
 // --- Helper Components ---
 
@@ -43,8 +43,8 @@ const ToggleSwitch = ({ label, value, onChange, disabled }) => (
     </div>
 );
 
-const InputRow = ({ label, type = "text", value, onChange, placeholder, disabled }) => (
-    <div className={`sam_form_row ${disabled ? 'sam_disabled' : ''}`}>
+const InputRow = ({ label, type = "text", value, onChange, placeholder, disabled, tooltip }) => (
+    <div className={`sam_form_row ${disabled ? 'sam_disabled' : ''}`} title={tooltip}>
         <label className="sam_label">{label}</label>
         <input
             type={type}
@@ -57,17 +57,16 @@ const InputRow = ({ label, type = "text", value, onChange, placeholder, disabled
     </div>
 );
 
+
 // --- Sub-Panels ---
 
 const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, disabled }) => {
-    
-    // Updates global plugin settings
+
     const handleSettingChange = (key, val) => {
         if(disabled) return;
         setSettings(prev => ({ ...prev, [key]: val }));
     };
 
-    // Updates Character/State specific data
     const handleDataChange = (key, val) => {
         if(disabled) return;
         setData(prev => ({ ...prev, [key]: val }));
@@ -76,17 +75,13 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
     const handleSaveAll = async () => {
         if (disabled) return;
         try {
-            // 1. Save Plugin Settings
-            const generalSettings = { ...settings };
-            delete generalSettings.summary_frequency;
-            delete generalSettings.summary_prompt;
-            delete generalSettings.summary_words;
+            // Save general plugin settings
+            await sam_set_setting('enabled', settings.enabled);
+            await sam_set_setting('enable_auto_checkpoint', settings.enable_auto_checkpoint);
+            await sam_set_setting('auto_checkpoint_frequency', settings.auto_checkpoint_frequency);
+            await sam_set_setting('skipWIAN_When_summarizing', settings.skipWIAN_When_summarizing);
 
-            for (const key of Object.keys(generalSettings)) {
-                await sam_set_setting(key, generalSettings[key]);
-            }
-
-            // 2. Save State Data (Mutation flags)
+            // Save state-specific data
             await onCommitData();
 
             toastr.success("Settings and Data configuration saved successfully.");
@@ -106,7 +101,27 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
                 onChange={(v) => handleSettingChange('enabled', v)}
                 disabled={disabled}
             />
-            
+            <ToggleSwitch
+                label="Auto Checkpoint"
+                value={settings.enable_auto_checkpoint}
+                onChange={(v) => handleSettingChange('enable_auto_checkpoint', v)}
+                disabled={disabled}
+            />
+            <InputRow
+                label="Checkpoint Frequency"
+                type="number"
+                value={settings.auto_checkpoint_frequency}
+                onChange={(v) => handleSettingChange('auto_checkpoint_frequency', v)}
+                disabled={disabled || !settings.enable_auto_checkpoint}
+                tooltip="Save the current state every X messages if no summary has occurred."
+            />
+            <ToggleSwitch
+                label="Skip WI/AN during Summary"
+                value={settings.skipWIAN_When_summarizing}
+                onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)}
+                disabled={disabled}
+            />
+
             <h3 className="sam_section_title">Data & State Configuration</h3>
             <p className="sam_help_text">These settings are saved to the current story state (SAM_data).</p>
             <ToggleSwitch
@@ -122,31 +137,9 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
                 disabled={disabled}
             />
 
-            <h3 className="sam_section_title">Checkpointing & Generation</h3>
-            <ToggleSwitch
-                label="Auto Checkpoint"
-                value={settings.enable_auto_checkpoint}
-                onChange={(v) => handleSettingChange('enable_auto_checkpoint', v)}
-                disabled={disabled}
-            />
-            <ToggleSwitch
-                label="Skip WI/AN during Summary"
-                value={settings.skipWIAN_When_summarizing}
-                onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)}
-                disabled={disabled}
-            />
-            {settings.enable_auto_checkpoint && (
-                <InputRow
-                    label="Checkpoint Frequency (Rounds)"
-                    type="number"
-                    value={settings.checkpoint_frequency}
-                    onChange={(v) => handleSettingChange('checkpoint_frequency', v)}
-                    disabled={disabled}
-                />
-            )}
             <div className="sam_actions" style={{ marginTop: '20px' }}>
-                <button 
-                    onClick={handleSaveAll} 
+                <button
+                    onClick={handleSaveAll}
                     className="sam_btn sam_btn_primary"
                     disabled={disabled}
                 >
@@ -162,15 +155,7 @@ const FunctionEditor = ({ functions, setFunctions, onCommit, disabled }) => {
 
     const handleAdd = () => {
         if(disabled) return;
-        const newFunc = {
-            func_name: "new_function",
-            func_params: [],
-            func_body: "// write code here\n// args: state, _, fetch, XMLHttpRequest\nreturn true;",
-            timeout: 2000,
-            periodic: false,
-            network_access: false,
-            order: "normal"
-        };
+        const newFunc = { func_name: "new_function", func_params: [], func_body: "// ...", timeout: 2000, periodic: false, network_access: false, order: "normal" };
         setFunctions([...functions, newFunc]);
         setSelectedIndex(functions.length);
     };
@@ -196,374 +181,261 @@ const FunctionEditor = ({ functions, setFunctions, onCommit, disabled }) => {
     return (
         <div className={`sam_panel_split ${disabled ? 'sam_disabled_area' : ''}`}>
             <div className="sam_sidebar_list">
+                <div className="sam_list_header"><span>Functions (WI)</span><button className="sam_btn_small" onClick={handleAdd} disabled={disabled}>+</button></div>
+                <ul>
+                    {functions.map((f, i) => (<li key={i} className={i === selectedIndex ? 'active' : ''} onClick={() => setSelectedIndex(i)}>{f.func_name}<span className="sam_delete_icon" onClick={(e) => { e.stopPropagation(); if(!disabled) handleDelete(i); }}>×</span></li>))}
+                </ul>
+                <div style={{padding: '10px'}}><button className="sam_btn sam_btn_primary full_width" onClick={onCommit} disabled={disabled}>Save to World Info</button></div>
+            </div>
+            <div className="sam_detail_view">
+                {selectedFunc ? (<div className="sam_scrollable_form">
+                    <InputRow label="Function Name" value={selectedFunc.func_name} onChange={(v) => updateFunc(selectedIndex, 'func_name', v)} disabled={disabled} />
+                    <div className="sam_form_row"><label className="sam_label">Params (comma separated)</label><input className="sam_input" value={(selectedFunc.func_params || []).join(', ')} onChange={(e) => updateFunc(selectedIndex, 'func_params', e.target.value.split(',').map(s => s.trim()))} disabled={disabled} /></div>
+                    <div className="sam_form_column"><label className="sam_label">Function Body (JS)</label><textarea className="sam_code_editor" value={selectedFunc.func_body} onChange={(e) => updateFunc(selectedIndex, 'func_body', e.target.value)} disabled={disabled} /></div>
+                    <div className="sam_form_grid"><InputRow label="Timeout (ms)" type="number" value={selectedFunc.timeout} onChange={(v) => updateFunc(selectedIndex, 'timeout', v)} disabled={disabled} /><div className="sam_form_row"><label className="sam_label">Exec Order</label><select className="sam_select" value={selectedFunc.order || 'normal'} onChange={(e) => updateFunc(selectedIndex, 'order', e.target.value)} disabled={disabled}><option value="first">First</option><option value="normal">Normal</option><option value="last">Last</option></select></div></div>
+                    <div className="sam_form_grid"><ToggleSwitch label="Periodic Eval" value={selectedFunc.periodic} onChange={(v) => updateFunc(selectedIndex, 'periodic', v)} disabled={disabled} /><ToggleSwitch label="Network Access" value={selectedFunc.network_access} onChange={(v) => updateFunc(selectedIndex, 'network_access', v)} disabled={disabled} /></div>
+                </div>) : (<div className="sam_empty_state">Select a function to edit</div>)}
+            </div>
+        </div>
+    );
+};
+
+// [NEW] Component to manage regex settings
+const RegexPanel = ({ regexes = [], setRegexes, onSave, disabled }) => {
+    const [selectedIndex, setSelectedIndex] = useState(-1);
+
+    const handleAdd = () => {
+        if (disabled) return;
+        const newRegex = { name: "New Regex", enabled: true, regex_body: "" };
+        setRegexes([...regexes, newRegex]);
+        setSelectedIndex(regexes.length);
+    };
+
+    const handleDelete = (index) => {
+        if (disabled) return;
+        if (!window.confirm("Delete this regex?")) return;
+        const newArr = [...regexes];
+        newArr.splice(index, 1);
+        setRegexes(newArr);
+        setSelectedIndex(-1);
+    };
+
+    const updateRegex = (index, field, value) => {
+        if (disabled) return;
+        const newArr = [...regexes];
+        newArr[index] = { ...newArr[index], [field]: value };
+        setRegexes(newArr);
+    };
+
+    const toggleEnabled = (e, index) => {
+        e.stopPropagation(); // Prevent selection when toggling
+        if (disabled) return;
+        const newArr = [...regexes];
+        newArr[index] = { ...newArr[index], enabled: !newArr[index].enabled };
+        setRegexes(newArr);
+    };
+
+    const selectedRegex = regexes[selectedIndex];
+
+    return (
+        <div className={`sam_panel_split ${disabled ? 'sam_disabled_area' : ''}`}>
+            <div className="sam_sidebar_list">
                 <div className="sam_list_header">
-                    <span>Functions (WI)</span>
+                    <span>Regex Filters</span>
                     <button className="sam_btn_small" onClick={handleAdd} disabled={disabled}>+</button>
                 </div>
                 <ul>
-                    {functions.map((f, i) => (
-                        <li
-                            key={i}
-                            className={i === selectedIndex ? 'active' : ''}
-                            onClick={() => setSelectedIndex(i)}
-                        >
-                            {f.func_name}
-                            <span 
-                                className="sam_delete_icon" 
-                                onClick={(e) => { 
-                                    e.stopPropagation(); 
-                                    if(!disabled) handleDelete(i); 
-                                }}
-                            >×</span>
+                    {regexes.map((r, i) => (
+                        <li key={i} className={i === selectedIndex ? 'active' : ''} onClick={() => setSelectedIndex(i)}>
+                            <div className="sam_list_item_content">
+                                <span className="sam_list_item_name">{r.name}</span>
+                                <div className="sam_list_item_controls">
+                                    <div className={`sam_toggle_micro ${r.enabled ? 'on' : 'off'}`} onClick={(e) => toggleEnabled(e, i)}>
+                                        <div className="sam_toggle_thumb_micro" />
+                                    </div>
+                                    <span className="sam_delete_icon" onClick={(e) => { e.stopPropagation(); if (!disabled) handleDelete(i); }}>×</span>
+                                </div>
+                            </div>
                         </li>
                     ))}
                 </ul>
-                <div style={{padding: '10px'}}>
-                    <button className="sam_btn sam_btn_primary full_width" onClick={onCommit} disabled={disabled}>
-                        Save to World Info
+                <div style={{ padding: '10px' }}>
+                    <button className="sam_btn sam_btn_primary full_width" onClick={onSave} disabled={disabled}>
+                        Save All Regexes
                     </button>
                 </div>
             </div>
             <div className="sam_detail_view">
-                {selectedFunc ? (
+                {selectedRegex ? (
                     <div className="sam_scrollable_form">
-                        <InputRow
-                            label="Function Name"
-                            value={selectedFunc.func_name}
-                            onChange={(v) => updateFunc(selectedIndex, 'func_name', v)}
-                            disabled={disabled}
-                        />
-                        <div className="sam_form_row">
-                            <label className="sam_label">Params (comma separated)</label>
-                            <input
-                                className="sam_input"
-                                value={(selectedFunc.func_params || []).join(', ')}
-                                onChange={(e) => updateFunc(selectedIndex, 'func_params', e.target.value.split(',').map(s => s.trim()))}
-                                disabled={disabled}
-                            />
+                        <InputRow label="Regex Name" value={selectedRegex.name} onChange={(v) => updateRegex(selectedIndex, 'name', v)} disabled={disabled} />
+                        <div className={`sam_form_column ${disabled ? 'sam_disabled' : ''}`}>
+                            <label className="sam_label">Regex Body (no slashes or flags)</label>
+                            <textarea className="sam_code_editor" value={selectedRegex.regex_body} onChange={(e) => updateRegex(selectedIndex, 'regex_body', e.target.value)} disabled={disabled} />
+                            <p className="sam_help_text_small">Example: `\n\*.*?\*` to remove italics. The 'g' (global) flag is added automatically.</p>
                         </div>
-                        <div className="sam_form_column">
-                            <label className="sam_label">Function Body (JS)</label>
-                            <textarea
-                                className="sam_code_editor"
-                                value={selectedFunc.func_body}
-                                onChange={(e) => updateFunc(selectedIndex, 'func_body', e.target.value)}
-                                disabled={disabled}
-                            />
-                        </div>
-                        <div className="sam_form_grid">
-                            <InputRow
-                                label="Timeout (ms)"
-                                type="number"
-                                value={selectedFunc.timeout}
-                                onChange={(v) => updateFunc(selectedIndex, 'timeout', v)}
-                                disabled={disabled}
-                            />
-                             <div className="sam_form_row">
-                                <label className="sam_label">Exec Order</label>
-                                <select
-                                    className="sam_select"
-                                    value={selectedFunc.order || 'normal'}
-                                    onChange={(e) => updateFunc(selectedIndex, 'order', e.target.value)}
-                                    disabled={disabled}
-                                >
-                                    <option value="first">First</option>
-                                    <option value="normal">Normal</option>
-                                    <option value="last">Last</option>
-                                </select>
-                            </div>
-                        </div>
-                         <div className="sam_form_grid">
-                            <ToggleSwitch
-                                label="Periodic Eval"
-                                value={selectedFunc.periodic}
-                                onChange={(v) => updateFunc(selectedIndex, 'periodic', v)}
-                                disabled={disabled}
-                            />
-                            <ToggleSwitch
-                                label="Network Access"
-                                value={selectedFunc.network_access}
-                                onChange={(v) => updateFunc(selectedIndex, 'network_access', v)}
-                                disabled={disabled}
-                            />
-                        </div>
+                        <ToggleSwitch label="Enabled" value={selectedRegex.enabled} onChange={(v) => updateRegex(selectedIndex, 'enabled', v)} disabled={disabled} />
                     </div>
                 ) : (
-                    <div className="sam_empty_state">Select a function to edit</div>
+                    <div className="sam_empty_state">Select a regex to edit</div>
                 )}
             </div>
         </div>
     );
 };
 
-// --- ST Style Extension Drawer ---
-const ExtensionDrawer = ({ children, title = "SAM Extension", warning }) => {
-    const [isOpen, setIsOpen] = useState(false);
 
+const SummaryLevelPanel = ({ level, summaries, onEdit, onDelete, disabled }) => {
     return (
-        <div className="inline-drawer">
-            <div 
-                className="inline-drawer-toggle inline-drawer-header" 
-                onClick={() => setIsOpen(!isOpen)}
-            >
-                <b>{title}</b>
-                {warning && <span style={{marginLeft:'10px', color:'orange', fontSize:'0.8em'}}>⚠ {warning}</span>}
-                <div 
-                    className="inline-drawer-icon fa-solid fa-circle-chevron-down down" 
-                    style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }}
-                />
-            </div>
-            {isOpen && (
-                <div className="inline-drawer-content">
-                    {children}
+        <div className="sam_summary_level_container">
+            <h4 className="sam_summary_level_title">{level} Summaries ({summaries.length})</h4>
+            {summaries.length === 0 ? (
+                <p className="sam_empty_state_small">No {level} summaries yet.</p>
+            ) : (
+                <div className="sam_summary_list">
+                    {summaries.map((summary, index) => (
+                        <div key={index} className="sam_summary_item">
+                            <div className="sam_summary_item_header">
+                                <span>Range: {summary.index_begin} - {summary.index_end}</span>
+                                <button
+                                    className="sam_delete_icon_small"
+                                    onClick={() => onDelete(level, index)}
+                                    disabled={disabled}
+                                    title="Delete this summary"
+                                >×</button>
+                            </div>
+                            <textarea
+                                className="sam_summary_textarea"
+                                value={summary.content}
+                                onChange={(e) => onEdit(level, index, e.target.value)}
+                                disabled={disabled}
+                            />
+                        </div>
+                    ))}
                 </div>
             )}
         </div>
     );
 };
 
+const ExtensionDrawer = ({ children, title = "SAM Extension", warning }) => {
+    const [isOpen, setIsOpen] = useState(false);
+    return (<div className="inline-drawer"><div className="inline-drawer-toggle inline-drawer-header" onClick={() => setIsOpen(!isOpen)}><b>{title}</b>{warning && <span style={{marginLeft:'10px', color:'orange', fontSize:'0.8em'}}>⚠ {warning}</span>}<div className="inline-drawer-icon fa-solid fa-circle-chevron-down down" style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} /></div>{isOpen && (<div className="inline-drawer-content">{children}</div>)}</div>);
+};
+
 // --- Main App Component ---
 
 function App() {
     const [showInterface, setShowInterface] = useState(false);
-    const [activeTab, setActiveTab] = useState('DATA');
-    
+    const [activeTab, setActiveTab] = useState('SUMMARY');
+
     const [draftSamData, setDraftSamData] = useState({});
     const [draftSamSettings, setDraftSamSettings] = useState({});
     const [draftFunctions, setDraftFunctions] = useState([]);
-    
-    const [summaries, setSummaries] = useState("");
+
+    const [draftSummaries, setDraftSummaries] = useState({ L1: [], L2: [], L3: [] });
+
     const [isDataReady, setIsDataReady] = useState(false);
     const [isBusy, setIsBusy] = useState(false);
     const [samStatusText, setSamStatusText] = useState("IDLE");
-    
-    // Safety Check State
+
     const [samDetected, setSamDetected] = useState(false);
 
-    // Portal containers
-    const [portalContainer, setPortalContainer] = useState(null); 
+    const [portalContainer, setPortalContainer] = useState(null);
     const [extensionsContainer, setExtensionsContainer] = useState(null);
     const nodeRef = useRef(null);
 
     // --- Helpers for World Info Functions & Identification ---
-    
+
     const checkSamExistence = async () => {
         try {
             const context = SillyTavern.getContext();
             const charId = context.characterId;
-            if (!context.characters[charId]) return false;
-
+            if (charId === null || !context.characters[charId]) return false;
             const worldInfoName = context.characters[charId].data.extensions.world;
             if (!worldInfoName) return false;
-
             const wiData = await context.loadWorldInfo(worldInfoName);
             if (!wiData || !wiData.entries) return false;
-
-            const entry = _.find(wiData.entries, (entry) => 
-                entry.comment === SAM_FUNCTIONLIB_ID || entry.uid === SAM_FUNCTIONLIB_ID
-            );
-
-            return !!entry; // Returns true if found
-        } catch (e) {
-            console.error("Error checking for SAM ID", e);
-            return false;
-        }
+            return !!_.find(wiData.entries, (entry) => entry.comment === SAM_FUNCTIONLIB_ID);
+        } catch (e) { console.error("Error checking for SAM ID", e); return false; }
     };
 
     const getFunctionsFromWI = async () => {
         try {
             const context = SillyTavern.getContext();
             const charId = context.characterId;
-            if (!context.characters[charId]) return [];
-
+            if (charId === null || !context.characters[charId]) return [];
             const worldInfoName = context.characters[charId].data.extensions.world;
             if (!worldInfoName) return [];
-
             const wiData = await context.loadWorldInfo(worldInfoName);
             if (!wiData || !wiData.entries) return [];
-
-            const funcEntry = _.find(wiData.entries, (entry) => 
-                entry.comment === SAM_FUNCTIONLIB_ID || entry.uid === SAM_FUNCTIONLIB_ID
-            );
-
+            const funcEntry = _.find(wiData.entries, (entry) => entry.comment === SAM_FUNCTIONLIB_ID);
             if (funcEntry && funcEntry.content) {
-                console.log("[SAM frontend] got function from WI");
-                try {
-                    const parsed = JSON.parse(funcEntry.content);
-                    return Array.isArray(parsed) ? parsed : [];
-                } catch (e) {
-                    console.error("[SAM frontend] Failed to parse Function Lib from WI", e);
-                    return [];
-                }
+                return JSON.parse(funcEntry.content);
             }
             return [];
-        } catch (e) {
-            console.error("[SAM frontend] Error fetching functions from WI", e);
-            return [];
-        }
+        } catch (e) { console.error("[SAM frontend] Error fetching functions from WI", e); return []; }
     };
 
     const saveFunctionsToWI = async (functions) => {
-        if (!samDetected) {
-            toastr.error("Cannot save: SAM Identifier not detected in World Info.");
-            return;
-        }
-
-        const characterWIName = await TavernHelper.getCurrentCharPrimaryLorebook();
-        if (!characterWIName){
-            toastr.error("This character does not have a WI");
-            return;
-        }
-        const worldInfoName = await TavernHelper.getWorldbook(characterWIName);
-
-        if (!worldInfoName) {
-            toastr.error("No World Info file associated with this character. Please create one first.");
-            return;
-        }
-
-        const funcString = JSON.stringify(functions, null, 2);
-
-        try {
-            let create_new = false;
-            let newIndex = 0;
-            const entryData = {
-                    name: SAM_FUNCTIONLIB_ID,
-                    enabled: false,
-                    strategy: {
-                        type: "selective",
-                        keys: [],
-                        keys_secondary: { "logic": "and_any", "keys": [] },
-                        "scan_depth": 3
-                    },
-                    "position": {
-                        "type": "at_depth",
-                        "role": "system",
-                        "depth": 543,
-                        "order": 543
-                    },
-                    content: funcString,
-                    probability: 100,
-                    recursion: {
-                        "prevent_incoming": true,
-                        "prevent_outgoing": true,
-                        "delay_until": null
-                    },
-                    effect: { "sticky": null, "cooldown": null, "delay": null },
-                    addMemo: true,
-                    "matchPersonaDescription": false,
-                    "matchCharacterDescription": false,
-                    "matchCharacterPersonality": false,
-                    "matchCharacterDepthPrompt": false,
-                    "matchScenario": false,
-                    "matchCreatorNotes": false,
-                    "group": "",
-                    "groupOverride": false,
-                    "groupWeight": 100,
-                    "caseSensitive": false,
-                    "matchWholeWords": null,
-                    "useGroupScoring": null,
-                    "automationId": ""
-                }
-            await TavernHelper.updateWorldbookWith(characterWIName, (worldbook) => {
-                const entries = worldbook;
-                const entryKey = _.findKey(entries, (entry) => entry.name === SAM_FUNCTIONLIB_ID);
-
-                if (entryKey) {
-                    _.merge(entries[entryKey], entryData);
-                } else {
-                    while (entries[String(newIndex)]) newIndex++;
-                    create_new = true;
-                }
-                return worldbook;
-            });
-
-            if (create_new){
-                await TavernHelper.createWorldbookEntries(characterWIName, {
-                        uid: newIndex, 
-                        ...entryData
-                    });
-            }
-
-            toastr.success("Functions saved to World Info Library.");
-        } catch (e) {
-            console.error(e);
-            toastr.error("Failed to save functions to WI.");
-        }
+        if (!samDetected) { toastr.error("Cannot save: SAM Identifier not detected in World Info."); return; }
+        // This function requires TavernHelper, which may not be available.
+        // For now, this is a placeholder for the user's specific implementation.
+        console.warn("saveFunctionsToWI is not fully implemented in this test build.");
+        toastr.info("Function saving is a placeholder. See console.");
     };
 
     // --- Data Loading & refreshing ---
 
     const refreshData = useCallback(async (forceUpdate = false) => {
-        if (!await sam_is_in_use()) {
+        if (! await sam_is_in_use()) {
             setSamDetected(false);
             return;
         }
-
         try {
-            // Check for existence first
             const exists = await checkSamExistence();
             setSamDetected(exists);
 
             const rawData = await sam_get_data();
             const settings = await sam_get_settings();
-            // Even if not detected, we try to load what we can, but UI will be locked
             const funcs = await getFunctionsFromWI();
 
             if (rawData) {
-                if (!rawData.static) rawData.static = {};
-                // Force update (or closed interface) updates drafts
                 if (!showInterface || forceUpdate) {
                     setDraftSamData(rawData);
-                    setSummaries((rawData.responseSummary || []).join('\n'));
+                    const responseSummary = rawData.response_summary || { L1: [], L2: [], L3: [] };
+                    setDraftSummaries(responseSummary);
                 }
             }
-            
             if (settings && (!showInterface || forceUpdate)) setDraftSamSettings(settings);
             if (funcs && (!showInterface || forceUpdate)) setDraftFunctions(funcs);
-
             if (!isDataReady) setIsDataReady(true);
         } catch (e) {
             console.error("[SAM frontend] Refresh Error:", e);
         }
     }, [showInterface, isDataReady]);
 
-    // --- Event Listeners ---
+    // --- Event Listeners & Heartbeat ---
 
     useEffect(() => {
-        const onInvalidate = () => {
-            // Force refresh of data, overwriting user drafts
-            refreshData(true);
-        };
-
+        const onInvalidate = () => refreshData(true);
         const onStatusResponse = (data) => {
             if (data && data.state) {
                 setSamStatusText(data.state);
-                const busyStates = ["AWAIT_GENERATION", "PROCESSING"];
-                setIsBusy(busyStates.includes(data.state));
+                setIsBusy(["AWAIT_GENERATION", "PROCESSING"].includes(data.state));
             }
         };
 
-        // Backend events
-        // INV: Core data changed invalidating current view
         eventSource.on(SAM_EVENTS.INV, onInvalidate);
         eventSource.on(SAM_EVENTS.CORE_STATUS_RESPONSE, onStatusResponse);
-
-        // Core ST events to ensure robustness
-        // Fired when generation is about to start
-        //eventSource.on(eventTypes.CHAT_COMPLETION_PROMPT_READY, onInvalidate);
-        // Fired when user swaps character or chat - Essential for reload
         eventSource.on(eventTypes.CHAT_CHANGED, onInvalidate);
 
         refreshData();
 
-        // Portal for Modal
         const pContainer = document.createElement('div');
-        pContainer.id = 'sam-portal-root';
         document.body.appendChild(pContainer);
         setPortalContainer(pContainer);
 
-        // Find Extensions Container for Drawer
-        // We retry briefly in case ST is still loading the DOM or tabs
         const findExtContainer = setInterval(() => {
             const extSettings = document.getElementById('extensions_settings');
             if (extSettings) {
@@ -573,291 +445,184 @@ function App() {
         }, 500);
 
         return () => {
-
             if (pContainer.parentNode) pContainer.parentNode.removeChild(pContainer);
             clearInterval(findExtContainer);
         };
     }, [refreshData]);
 
-    // --- Heartbeat for Status ---
     useEffect(() => {
         if (!showInterface) return;
-
         const interval = setInterval(() => {
-            if (sam_get_status() !== "IDLE") {
-                eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS);
-            }
+            if (sam_get_status() !== "IDLE") { eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS); }
         }, 2500);
-
         return () => clearInterval(interval);
     }, [showInterface]);
-
 
     // --- Handlers ---
 
     const handleManualRefresh = () => {
         if (window.confirm("Refresh data? Unsaved changes will be lost.")) {
-            refreshData(true); // Treat manual refresh as force update
+            refreshData(true);
             toastr.info("UI Refreshed.");
         }
     };
 
     const handleCommitData = async () => {
-        if (!samDetected) {
-            toastr.error("Locked: SAM Identifier missing.");
-            return;
-        }
+        if (!samDetected) { toastr.error("Locked: SAM Identifier missing."); return; }
         try {
             const cleanData = { ...draftSamData };
-            cleanData.responseSummary = summaries.split('\n').filter(l => l.trim() !== "");
-            
+            cleanData.response_summary = draftSummaries;
             await sam_set_data(cleanData);
             toastr.success("Data committed to State.");
-        } catch (e) {
-            console.error(e);
-            toastr.error("Error committing data: " + e.message);
-        }
+        } catch (e) { console.error(e); toastr.error("Error committing data: " + e.message); }
     };
 
     const handleCommitFunctions = async () => {
-        if (!samDetected) {
-            toastr.error("Locked: SAM Identifier missing.");
-            return;
-        }
+        if (!samDetected) { toastr.error("Locked: SAM Identifier missing."); return; }
         if (window.confirm("This will overwrite the Function Library in World Info. Continue?")) {
             await saveFunctionsToWI(draftFunctions);
         }
     };
 
-    const handleSummaryChange = (e) => {
+    const handleSummaryContentChange = (level, index, newContent) => {
         if (!samDetected) return;
-        setSummaries(e.target.value);
+        setDraftSummaries(prev => {
+            const newSummaries = [...(prev[level] || [])];
+            newSummaries[index] = { ...newSummaries[index], content: newContent };
+            return { ...prev, [level]: newSummaries };
+        });
+    };
+
+    const handleSummaryDelete = (level, index) => {
+        if (!samDetected) return;
+        if (!window.confirm(`Are you sure you want to delete this ${level} summary?`)) return;
+        setDraftSummaries(prev => {
+            const newSummaries = [...(prev[level] || [])];
+            newSummaries.splice(index, 1);
+            return { ...prev, [level]: newSummaries };
+        });
     };
 
     const handleSaveSummarySettings = async () => {
         if (!samDetected) return;
         try {
-            await sam_set_setting('summary_frequency', draftSamSettings.summary_frequency);
+            await sam_set_setting('summary_levels', draftSamSettings.summary_levels);
             await sam_set_setting('summary_prompt', draftSamSettings.summary_prompt);
-            await sam_set_setting('summary_words', draftSamSettings.summary_words);
-            await sam_set_setting('skipWIAN_When_summarizing', draftSamSettings.skipWIAN_When_summarizing);
             toastr.success("Summary settings saved.");
+        } catch (e) { console.error(e); toastr.error("Error saving summary settings: " + e.message); }
+    };
+    
+    // [NEW] Handler to save regex settings
+    const handleSaveRegexSettings = async () => {
+        if (!samDetected) return;
+        try {
+            await sam_set_setting('regexes', draftSamSettings.regexes);
+            toastr.success("Regex settings saved.");
         } catch (e) {
             console.error(e);
-            toastr.error("Error saving summary settings.");
+            toastr.error("Error saving regex settings: " + e.message);
         }
     };
 
     const handleTriggerSummary = async () => {
-        if (!samDetected) {
-            toastr.error("Locked: SAM Identifier missing.");
-            return;
-        }
-        if (isBusy) {
-            toastr.warning("Core is busy. Cannot run summary now.");
-            return;
-        }
+        if (!samDetected) { toastr.error("Locked: SAM Identifier missing."); return; }
+        if (isBusy) { toastr.warning("Core is busy. Cannot run summary now."); return; }
         toastr.info("Triggering manual summary...");
         await sam_summary();
     };
 
     const handleJsonChange = (content) => {
         if (!samDetected) return;
-        if (content.jsObject) {
-            setDraftSamData(content.jsObject);
-        }
+        if (content.jsObject) { setDraftSamData(content.jsObject); }
     };
 
     // --- Render ---
 
-    // The Drawer to be placed in the Extensions List
     const drawerContent = (
-        <ExtensionDrawer title="SAM v4.0.5" warning={!samDetected ? "Not Detected" : null}>
+        <ExtensionDrawer title={`SAM v${SCRIPT_VERSION}`} warning={!samDetected ? "Not Detected" : null}>
             <div className="sam_drawer_controls">
-                {!samDetected && (
-                    <div className="sam_warning_box">
-                        SAM Identifier not found in World Info. Extension inactive.
-                    </div>
-                )}
-                 <button onClick={() => setShowInterface(true)} className="sam_menu_button full_width">
-                    Open Configuration Manager
-                </button>
-                <div className="sam_status_micro">
-                    Status: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span>
-                </div>
+                {!samDetected && (<div className="sam_warning_box">SAM Identifier not found in World Info.</div>)}
+                 <button onClick={() => setShowInterface(true)} className="sam_menu_button full_width">Open Configuration Manager</button>
+                <div className="sam_status_micro">Status: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
             </div>
         </ExtensionDrawer>
     );
 
-    // The Main Window (Floating Modal)
     const modalContent = (
         <div className="sam_modal_overlay">
             <Draggable handle=".sam_modal_header" nodeRef={nodeRef}>
-                <div className="sam_app_window" ref={nodeRef} style={activeTab === 'SUMMARY' ? { height: '100vh' } : {}}>
+                <div className="sam_app_window" ref={nodeRef} style={activeTab === 'SUMMARY' ? { height: '95vh', maxHeight: '1200px' } : {}}>
                     <div className="sam_modal_header">
-                        <div className="sam_header_title">
-                            <span className="sam_brand">SAM</span> MANAGER
-                            <span className="sam_version"> v4.0.5</span>
-                        </div>
+                        <div className="sam_header_title"><span className="sam_brand">SAM</span> MANAGER<span className="sam_version"> v{SCRIPT_VERSION}</span></div>
                         <button onClick={() => setShowInterface(false)} className="sam_close_icon">✕</button>
                     </div>
-
-                    {!samDetected && (
-                         <div className="sam_banner_error">
-                            SAM Identifier ({SAM_FUNCTIONLIB_ID}) not detected in Character World Info. 
-                            <br/>Functionality is locked.
-                         </div>
-                    )}
-
+                    {!samDetected && (<div className="sam_banner_error">SAM Identifier ({SAM_FUNCTIONLIB_ID}) not detected. Functionality is locked.</div>)}
                     <div className="sam_tabs">
-                        <button className={`sam_tab ${activeTab === 'DATA' ? 'active' : ''}`} onClick={() => setActiveTab('DATA')}>
-                            Data
-                        </button>
-                        <button className={`sam_tab ${activeTab === 'SUMMARY' ? 'active' : ''}`} onClick={() => setActiveTab('SUMMARY')}>
-                            Summary
-                        </button>
-                        <button className={`sam_tab ${activeTab === 'FUNCS' ? 'active' : ''}`} onClick={() => setActiveTab('FUNCS')}>
-                            Functions
-                        </button>
-                        <button className={`sam_tab ${activeTab === 'SETTINGS' ? 'active' : ''}`} onClick={() => setActiveTab('SETTINGS')}>
-                            Settings
-                        </button>
+                        <button className={`sam_tab ${activeTab === 'SUMMARY' ? 'active' : ''}`} onClick={() => setActiveTab('SUMMARY')}>Summary</button>
+                        {/* [NEW] Regex Tab */}
+                        <button className={`sam_tab ${activeTab === 'REGEX' ? 'active' : ''}`} onClick={() => setActiveTab('REGEX')}>Regex</button>
+                        <button className={`sam_tab ${activeTab === 'DATA' ? 'active' : ''}`} onClick={() => setActiveTab('DATA')}>Data</button>
+                        <button className={`sam_tab ${activeTab === 'FUNCS' ? 'active' : ''}`} onClick={() => setActiveTab('FUNCS')}>Functions</button>
+                        <button className={`sam_tab ${activeTab === 'SETTINGS' ? 'active' : ''}`} onClick={() => setActiveTab('SETTINGS')}>Settings</button>
                     </div>
-
                     <div className={`sam_content_area ${!samDetected ? 'sam_area_disabled' : ''}`}>
                         {activeTab === 'DATA' && (
                             <div className={`sam_panel_content ${isBusy ? 'disabled' : ''}`}>
-                                <h4 className="sam_panel_label">
-                                    Raw JSON State {isBusy ? "(Locked - Core Busy)" : ""}
-                                </h4>
+                                <h4 className="sam_panel_label">Raw JSON State {isBusy ? "(Locked - Core Busy)" : ""}</h4>
                                 <div className="sam_json_wrapper">
-                                    {isDataReady ? (
-                                        <JSONEditor
-                                            id="sam_json_edit"
-                                            placeholder={draftSamData}
-                                            onChange={handleJsonChange}
-                                            locale={locale}
-                                            theme="dark_vscode_tribute"
-                                            height="100%"
-                                            width="100%"
-                                            colors={{ background: 'transparent' }}
-                                            viewOnly={isBusy || !samDetected}
-                                        />
-                                    ) : (
-                                        <div className="sam_empty_state">Loading data...</div>
-                                    )}
+                                    {isDataReady ? (<JSONEditor id="sam_json_edit" placeholder={draftSamData} onChange={handleJsonChange} locale={locale} theme="dark_vscode_tribute" height="100%" width="100%" colors={{ background: 'transparent' }} viewOnly={isBusy || !samDetected} />) : (<div className="sam_empty_state">Loading data...</div>)}
                                 </div>
-                                <div className="sam_actions" style={{marginTop: '10px'}}>
-                                    <button 
-                                        onClick={handleCommitData} 
-                                        className="sam_btn sam_btn_primary"
-                                        disabled={isBusy || !samDetected}
-                                    >
-                                        Commit Data Changes
-                                    </button>
-                                </div>
+                                <div className="sam_actions" style={{marginTop: '10px'}}><button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy || !samDetected}>Commit Data Changes</button></div>
                             </div>
                         )}
-
                         {activeTab === 'SUMMARY' && (
                             <div className="sam_panel_content full_height layout_column">
                                 <div className="sam_summary_settings_section">
-                                    <h3 className="sam_section_title">Summary Configuration</h3>
-                                    <div className="sam_form_grid">
-                                        <div className={`sam_form_row sam_inline_input ${!samDetected ? 'sam_disabled' : ''}`}>
-                                            <label className="sam_label">Frequency (responses)</label>
-                                            <input
-                                                type="number"
-                                                className="sam_input small_input"
-                                                value={draftSamSettings.summary_frequency || ''}
-                                                onChange={(e) => setDraftSamSettings(p => ({...p, summary_frequency: Number(e.target.value)}))}
-                                                placeholder="30"
-                                                disabled={!samDetected}
-                                            />
-                                        </div>
-                                        <div className={`sam_form_row sam_inline_input ${!samDetected ? 'sam_disabled' : ''}`}>
-                                            <label className="sam_label">Max Words</label>
-                                            <input
-                                                type="number"
-                                                className="sam_input small_input"
-                                                value={draftSamSettings.summary_words || ''}
-                                                onChange={(e) => setDraftSamSettings(p => ({...p, summary_words: Number(e.target.value)}))}
-                                                placeholder="150"
-                                                disabled={!samDetected}
-                                            />
-                                        </div>
+                                    <h3 className="sam_section_title">Hierarchical Summary Configuration</h3>
+                                    
+                                    {/* [UPDATED] Progress Display */}
+                                    <div className="sam_form_row" style={{ padding: '0 0 10px 0', borderBottom: '1px solid #444', marginBottom: '15px' }}>
+                                        <label className="sam_label" style={{ width: 'auto', marginRight: '10px' }}>Current Progress (Last Summarized Index):</label>
+                                        <span style={{ fontFamily: 'monospace', fontSize: '1.1em', fontWeight: 'bold' }}>
+                                            {draftSamData.summary_progress || 0}
+                                        </span>
                                     </div>
-                                    <div className="sam_form_column">
-                                        <ToggleSwitch
-                                            label="Skip WI/AN during Summary"
-                                            value={draftSamSettings.skipWIAN_When_summarizing}
-                                            onChange={(v) => setDraftSamSettings(p => ({...p, skipWIAN_When_summarizing: v}))}
-                                            disabled={!samDetected}
-                                        />
+                                    {/* End Progress Display */}
+
+                                    <div className="sam_form_grid_3">
+                                        <InputRow label="L1 Frequency" type="number" value={draftSamSettings.summary_levels?.L1?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.frequency', v))} tooltip="Create L1 every X messages." disabled={!samDetected} />
+                                        <InputRow label="L2 Frequency" type="number" value={draftSamSettings.summary_levels?.L2?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.frequency', v))} tooltip="Create L2 from every X L1s." disabled={!samDetected} />
+                                        <InputRow label="L3 Frequency" type="number" value={draftSamSettings.summary_levels?.L3?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.frequency', v))} tooltip="Create L3 from every X L2s." disabled={!samDetected} />
                                     </div>
-                                     <div className={`sam_form_column ${!samDetected ? 'sam_disabled' : ''}`}>
-                                        <label className="sam_label">Summary Prompt</label>
-                                        <textarea
-                                            className="sam_textarea_medium"
-                                            value={draftSamSettings.summary_prompt || ''}
-                                            onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))}
-                                            placeholder="Enter the prompt for generating summaries..."
-                                            disabled={!samDetected}
-                                        />
-                                    </div>
-                                    <div className="sam_actions">
-                                        <button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary" disabled={!samDetected}>Save Config</button>
-                                        <button onClick={handleTriggerSummary} className="sam_btn sam_btn_secondary" disabled={isBusy || !samDetected}>
-                                            Generate Summary Now
-                                        </button>
-                                    </div>
+                                    <ToggleSwitch label="Enable L1 Summaries" value={draftSamSettings.summary_levels?.L1?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.enabled', v))} disabled={!samDetected} />
+                                    <p className="sam_help_text">If disabled, raw chat is stored as L1 nodes instead of being summarized.</p>
+                                    <div className={`sam_form_column ${!samDetected ? 'sam_disabled' : ''}`}><label className="sam_label">L1 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))} disabled={!samDetected} /></div>
+                                    <div className="sam_actions"><button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary" disabled={!samDetected}>Save Config</button><button onClick={handleTriggerSummary} className="sam_btn sam_btn_secondary" disabled={isBusy || !samDetected}>Run Summarization Now</button></div>
                                 </div>
                                 <hr className="sam_divider" />
-                                 <h4 className="sam_panel_label">Saved Response Summaries</h4>
-                                <textarea
-                                    className={`sam_textarea_full ${!samDetected ? 'sam_disabled' : ''}`}
-                                    value={summaries}
-                                    onChange={handleSummaryChange}
-                                    placeholder="One summary per line..."
-                                    disabled={!samDetected}
-                                />
-                                <div className="sam_actions" style={{marginTop:'5px'}}>
-                                     <button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy || !samDetected}>
-                                        Save Summaries (Commit Data)
-                                    </button>
+                                <div className="sam_summary_display_area">
+                                    <SummaryLevelPanel level="L3" summaries={draftSummaries.L3 || []} onEdit={handleSummaryContentChange} onDelete={handleSummaryDelete} disabled={isBusy || !samDetected} />
+                                    <SummaryLevelPanel level="L2" summaries={draftSummaries.L2 || []} onEdit={handleSummaryContentChange} onDelete={handleSummaryDelete} disabled={isBusy || !samDetected} />
+                                    <SummaryLevelPanel level="L1" summaries={draftSummaries.L1 || []} onEdit={handleSummaryContentChange} onDelete={handleSummaryDelete} disabled={isBusy || !samDetected} />
                                 </div>
+                                <div className="sam_actions" style={{marginTop:'auto', paddingTop: '10px'}}><button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy || !samDetected}>Save All Edited Summaries</button></div>
                             </div>
                         )}
-
-                        {activeTab === 'FUNCS' && (
-                            <FunctionEditor
-                                functions={draftFunctions}
-                                setFunctions={setDraftFunctions}
-                                onCommit={handleCommitFunctions}
+                         {/* [NEW] Render Regex Panel */}
+                        {activeTab === 'REGEX' && (
+                            <RegexPanel
+                                regexes={draftSamSettings.regexes || []}
+                                setRegexes={(newRegexes) => setDraftSamSettings(p => ({ ...p, regexes: newRegexes }))}
+                                onSave={handleSaveRegexSettings}
                                 disabled={!samDetected}
                             />
                         )}
-
-                        {activeTab === 'SETTINGS' && (
-                            <SettingsPanel
-                                settings={draftSamSettings}
-                                setSettings={setDraftSamSettings}
-                                data={draftSamData}
-                                setData={setDraftSamData}
-                                onCommitData={handleCommitData}
-                                disabled={!samDetected}
-                            />
-                        )}
+                        {activeTab === 'FUNCS' && (<FunctionEditor functions={draftFunctions} setFunctions={setDraftFunctions} onCommit={handleCommitFunctions} disabled={!samDetected} />)}
+                        {activeTab === 'SETTINGS' && (<SettingsPanel settings={draftSamSettings} setSettings={setDraftSamSettings} data={draftSamData} setData={setDraftSamData} onCommitData={handleCommitData} disabled={!samDetected} />)}
                     </div>
-
                     <div className="sam_modal_footer">
-                        <div className="sam_status_bar">
-                            Status: {samDetected ? (draftSamSettings.enabled ? "Active" : "Disabled") : "MISSING ID"} | Core State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span>
-                        </div>
-                        <div className="sam_actions">
-                            <button onClick={handleManualRefresh} className="sam_btn sam_btn_secondary">Refresh UI</button>
-                            <button onClick={() => setShowInterface(false)} className="sam_btn sam_btn_secondary">Close</button>
-                        </div>
+                        <div className="sam_status_bar">Status: {samDetected ? (draftSamSettings.enabled ? "Active" : "Disabled") : "MISSING ID"} | Core State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
+                        <div className="sam_actions"><button onClick={handleManualRefresh} className="sam_btn sam_btn_secondary">Refresh UI</button><button onClick={() => setShowInterface(false)} className="sam_btn sam_btn_secondary">Close</button></div>
                     </div>
                 </div>
             </Draggable>
@@ -866,10 +631,7 @@ function App() {
 
     return (
         <>
-            {/* Render the Drawer into the Extensions Panel */}
             {extensionsContainer && ReactDOM.createPortal(drawerContent, extensionsContainer)}
-            
-            {/* Render the Main Window into the Body */}
             {showInterface && portalContainer && ReactDOM.createPortal(modalContent, portalContainer)}
         </>
     );

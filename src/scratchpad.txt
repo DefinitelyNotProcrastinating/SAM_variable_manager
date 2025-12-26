@@ -1,81 +1,377 @@
-TavernHelper.getVariables({'type':'characters'})
-await TavernHelper.replaceVariables({神乐光: {好感度: 5, 认知度: 0}}, {type: 'characters'});
+// ============================================================================
+// == Situational Awareness Manager (backend.js)
+// ============================================================================
+(function () {
+    // --- CONFIGURATION ---
+    const SCRIPT_NAME = "SAM-Util";
+    const SCRIPT_VERSION = "5.4.0"; // Added Dry Run Handling
+    const { Summary } = require('./Summary.js');
+    const { SAMDatabase } = require('./SAMDatabase.js');
+    const { registerMacro } = SillyTavern.getContext();
 
-we must do character settings here.
-idea: 
-App.js takes care of the custom function setting. App.js sets custom function to character variables.
-Then script gets the functions via the character variables!
+    // --- FSM STATES ---
+    const SAM_STATES = {
+        IDLE: "IDLE",             
+        CHECKING: "CHECKING",     
+        GENERATING: "GENERATING", 
+        ABORTED: "ABORTED"        
+    };
 
+    let sam_fsm_state = SAM_STATES.IDLE;
+    
+    // --- DRY RUN TRACKING ---
+    // We track this to ensure we don't mess up our schedule based on background events
+    let current_run_is_dry = false;
 
+    // 核心设置
+    const DEFAULT_SETTINGS = {
+        enabled: true,
+        enable_auto_checkpoint: true,
+        l2_summary_period: 20, 
+        skipWIAN_When_summarizing: false,
+        regexes: [],
+        summary_prompt: `请仔细审查下方提供的聊天记录和现有设定。你的任务包含两部分，并需严格按照指定格式输出：
 
-// rethink: Do we really need that?
-// the answer is really NO.
-// base case: use SAM V4 script (no extension) -> works
-// extended case: use the extension, enables auto memory and state manip -> better, still works
-// therefore it is better if we refactor the script and make the plugin purely for auto memory and state manipulation
-// it is actually not very preferred to keep the updater and the script together
-// because there are people who want to use other memory extensions and we will let them!
+1.  **L2摘要**: 将“新内容”合并成一段连贯的摘要。在摘要中，每个对应原始消息的事件都必须在其句首注明编号。例如：【1】甘道夫和佛罗多见了面... 【2】佛罗多一行人前往了瑞文戴尔...
 
+2.  **插入指令**: 对比“新内容”和“现有设定”。只为那些在“现有设定”中**不存在**的关键信息（如新角色、新地点、关键物品或设定）生成插入指令。指令格式为：
+    @.insert(key="unique_key", content="详细描述", keywords=["关键词1", "关键词2"])
 
-// new arch:
+**最终输出格式要求：**
+必须先输出完整的L2摘要，然后另起一行输出所有的 @.insert() 指令。不要添加任何其他文字、标题或解释。
 
-// splitted sources: 1. script 2. ext
-// splitted data sources: 1. chat (perm) 2. vars (temp)
-// event is just a string. We support sending "EVENT" instead of something in event_types.
-// this is completely fine.
-// use await eventEmit for script.
-// use the other method for ext.
-/*
-normal gameplay:
+---
+现有设定:
+{{db_content}}
+---
+新内容:
+{{chat_content}}
+---
+`,
+    };
 
-script - begin
-script - AITime
-script - finish
-script gets the SAM_data current
-script processes @.commands from AI
-script writes new SAM_data to chat
-script broadcast event: SAM_DATA_UPDATED
-ext receives event, updates its display
+    let sam_settings = { ...DEFAULT_SETTINGS };
+    let sam_db = null;
 
-Summary:
+    // Markers
+    const STATE_BLOCK_START_MARKER = '$$$$$$data_block$$$$$$';
+    const STATE_BLOCK_END_MARKER = '$$$$$$data_block_end$$$$$$';
+    const OLD_START_MARKER = '<!--<|state|>'; 
+    const OLD_END_MARKER = '</|state|>-->';
+    const SAM_ACTIVATION_KEY = "__SAM_IDENTIFIER__";
+    const MODULE_NAME = 'sam_extension';
+    const SAM_EVENTS = { INV: 'SAM_INV' };
 
-for 20 runs later... or some preset checkpoint time
-There is going to be a race condition and this is guaranteed.
-AI might be running, but ext is also running AI summary. 
-If ext finishes earlier than AI, it will update SAM data FIRST, which is bad behavior.
+    var { eventSource, eventTypes, extensionSettings, saveSettingsDebounced, generateQuietPrompt, substituteParamsExtended } = SillyTavern.getContext();
+    var _ = require('lodash');
+    var go_flag = false;
+    
+    const STATE_BLOCK_REMOVE_REGEX = new RegExp(`(?:${OLD_START_MARKER.replace(/\|/g, '\\|')}|${STATE_BLOCK_START_MARKER.replace(/\$/g, '\\$')})\\s*[\\s\\S]*?\\s*(?:${OLD_END_MARKER.replace(/\|/g, '\\|')}|${STATE_BLOCK_END_MARKER.replace(/\$/g, '\\$')})`, 'sg');
 
-ext - sends SAM_SUMMARY_BEGIN
-ext - AITime
-ext - sends SAM_SUMMARY_END
-ext checks script's window function to see if it is idle or not. If not, wait.
-Or, ext broadcasts SAM_ASK_FOR_IDLE. script waits 0.05s, then broadcasts SAM_IS_IDLE or SAM_IS_NOT_IDLE after receiving.
-ext may choose to re-ask this question every 1s. 1s is fairly long in computer time.
-ext gets SAM_data
-ext writes SAM_data.response_summary
-ext writes new SAM_data to chat
-ext updates its own display
+    const INITIAL_STATE = {
+        static: {},
+        time: "",
+        volatile: [],
+        func: [],
+        events: [],
+        event_counter: 0,
+        response_summary: { L1: [], L2: [], L3: [] }, 
+        summary_progress: 0, 
+        jsondb: null, 
+        serialized_memory: "",
+        serialized_db: "",
+        last_saved_index: -1 
+    };
 
-Edit vars/response_summary:
-ext - commit button pressed
-ext - if json invalid, return -1 (fail)
-ext checks script's window function to see if it is idle or not. If not, wait.
-ext writes it to chat.
-ext writes it to vars.
-ext broadcasts SAM_DATA_UPDATED
-script gets the event
-script triggers rerender on Tavernhelper (Or, a set chat messages with itself. This also re-renders)
+    const logger = {
+        info: (...args) => console.log(`[${SCRIPT_NAME}]`, ...args),
+        warn: (...args) => console.warn(`[${SCRIPT_NAME}]`, ...args),
+        error: (...args) => console.error(`[${SCRIPT_NAME}]`, ...args)
+    };
 
+    // ============================================================================
+    // == FSM CORE LOGIC
+    // ============================================================================
 
-Function/base Setting updates:
-ext - commit button pressed
-ext - if function invalid, return -1 (fail)
-ext writes it to character variables. This makes it persist with the character
-ext broadcasts SAM_FUNCTION_UPDATED
-script gets the functions and stores them in const functions.
+    const SAM_FSM = {
+        triggerCheck: async function() {
+            // Guard: If currently generating, don't interrupt self
+            if (sam_fsm_state === SAM_STATES.GENERATING) return;
 
-Note that no setting is being stored in global settings. This is expected - different cards 
-may require different settings.
-SAM extension is only an "editor" and summarizer.
+            sam_fsm_state = SAM_STATES.CHECKING;
+            await checkWorldInfoActivation();
+            const settings = loadSamSettings();
 
+            if (!go_flag || !settings.enabled) {
+                sam_fsm_state = SAM_STATES.IDLE;
+                return;
+            }
 
-*/
+            const data = await getVariables();
+            const chat = SillyTavern.getContext().chat;
+            
+            // Sliding Window Logic
+            const last_progress = data.summary_progress || 0;
+            const period = settings.l2_summary_period || 20;
+            const current_msg_count = chat.length;
+            const messages_since_last_summary = current_msg_count - last_progress;
+
+            // Only log if we are close to triggering to reduce console spam
+            if (messages_since_last_summary >= period) {
+                logger.info(`FSM Check: Threshold reached (Gap: ${messages_since_last_summary}/${period}). Initiating Summary.`);
+                await this.startGeneration(last_progress, current_msg_count);
+            } else {
+                sam_fsm_state = SAM_STATES.IDLE;
+            }
+        },
+
+        startGeneration: async function(startIndex, endIndex) {
+            sam_fsm_state = SAM_STATES.GENERATING;
+            try {
+                const success = await processSummarizationRun(startIndex, endIndex);
+                if (success) {
+                    logger.info("FSM: Generation Success.");
+                }
+            } catch (err) {
+                logger.error("FSM: Error during generation cycle.", err);
+            } finally {
+                sam_fsm_state = SAM_STATES.IDLE;
+            }
+        },
+
+        handleInterruption: function() {
+            // Crucial: Only mark as Aborted if WE were the ones generating.
+            // If the user stopped a dry run or the main chat, we don't care, 
+            // unless we were running in the background.
+            if (sam_fsm_state === SAM_STATES.GENERATING) {
+                logger.info("FSM: Interruption detected (Abort/Swipe). Marking state as Aborted (Delay 1).");
+                sam_fsm_state = SAM_STATES.ABORTED;
+            }
+        }
+    };
+
+    // ============================================================================
+    // == SETTINGS & UTILS
+    // ============================================================================
+    // ... (Standard Utils - No changes here, kept brief for display) ...
+    function loadSamSettings() {
+        if (!extensionSettings[MODULE_NAME]) extensionSettings[MODULE_NAME] = structuredClone(DEFAULT_SETTINGS);
+        _.defaultsDeep(extensionSettings[MODULE_NAME], DEFAULT_SETTINGS);
+        return extensionSettings[MODULE_NAME];
+    }
+    async function saveSamSettings(key, value) { var s = loadSamSettings(); _.set(s, key, value); saveSettingsDebounced(); }
+    async function checkWorldInfoActivation() {
+        try {
+            const wi = await getCurrentWorldbookName();
+            if (!wi) return;
+            const wi_entry_arr = Object.values(wi.entries);
+            go_flag = wi_entry_arr.some(item => item.comment === SAM_ACTIVATION_KEY);
+        } catch (e) { go_flag = false; }
+    }
+    async function getVariables() {
+        let data = SillyTavern.getContext().variables.local.get("SAM_data");
+        if (!data) data = goodCopy(INITIAL_STATE);
+        if (data.summary_progress === undefined) data.summary_progress = 0;
+        return data;
+    }
+    async function setAllVariables(newData) { if (newData && typeof newData === 'object') SillyTavern.getContext().variables.local.set("SAM_data", newData); }
+    async function sam_renewVariables(SAM_data) {
+        let curr_variables = { SAM_data: goodCopy(SAM_data) };
+        await setAllVariables(curr_variables);
+        await initializeDatabase(SAM_data.jsondb);
+        await eventSource.emit(SAM_EVENTS.INV);
+    }
+    function goodCopy(state) { if (!state) return _.cloneDeep(INITIAL_STATE); return JSON.parse(JSON.stringify(state)); }
+    async function getCurrentWorldbookName() {
+        const characterId = SillyTavern.getContext().characterId;
+        if (characterId === null || characterId < 0) return null;
+        const char = SillyTavern.getContext().characters[characterId];
+        const worldInfoName = char?.data?.extensions?.world;
+        return worldInfoName ? await SillyTavern.getContext().loadWorldInfo(worldInfoName) : null;
+    }
+    async function findLastAiMessageAndIndex() {
+        const chat = SillyTavern.getContext().chat;
+        for (let i = chat.length - 1; i >= 0; i--) { if (chat[i] && !chat[i].is_user) return i; }
+        return -1;
+    }
+    async function chunkedStringify(obj) { return new Promise(resolve => setTimeout(() => resolve(JSON.stringify(obj, null, 2)), 10)); }
+
+    // ============================================================================
+    // == API
+    // ============================================================================
+    async function sam_get_data() { return await getVariables(); }
+    async function sam_set_data(newData) {
+        if (typeof newData !== 'object' || newData === null) return;
+        try {
+            const lastAiIndex = await findLastAiMessageAndIndex();
+            if (lastAiIndex === -1) return;
+            newData.last_saved_index = lastAiIndex;
+            const lastAiMessage = SillyTavern.getContext().chat[lastAiIndex];
+            const cleanNarrative = lastAiMessage.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim();
+            const newStateBlock = await chunkedStringify(newData);
+            const finalContent = `${cleanNarrative}\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
+            await SillyTavern.getContext().editMessage(lastAiIndex, finalContent);
+            await sam_renewVariables(newData);
+            logger.info("SAM Data updated.");
+        } catch (error) { logger.error("sam_set_data failed.", error); }
+    }
+    async function sam_summary() {
+        logger.info("[SAM utils] Manual summary trigger");
+        const chat = SillyTavern.getContext().chat;
+        const data = await getVariables();
+        SAM_FSM.startGeneration(data.summary_progress || 0, chat.length);
+    }
+
+    // ============================================================================
+    // == WORKER
+    // ============================================================================
+    async function initializeDatabase(dbStateJson = null) {
+        sam_db = new SAMDatabase({ enabled: true });
+        await sam_db.init();
+        if (dbStateJson && typeof dbStateJson === 'string') { try { sam_db.import(dbStateJson); } catch (error) { } }
+    }
+    function parseAiResponseForL2(rawResponse) {
+        const inserts = [];
+        const insertCommandRegex = /@\.insert\s*\(([\s\S]*?)\)/gi;
+        const summaryContent = rawResponse.replace(insertCommandRegex, (match, argsStr) => {
+            try {
+                const args = JSON.parse(`{${argsStr}}`);
+                if (args.key && args.content && Array.isArray(args.keywords)) {
+                    inserts.push({ key: args.key, content: args.content.trim(), keywords: args.keywords });
+                }
+            } catch (error) { }
+            return ''; 
+        }).trim();
+        return { summaryContent, inserts };
+    }
+    async function serializeMemory(data) {
+        let serialized_db = "尚未储存任何设定。";
+        if (sam_db && sam_db.isInitialized) {
+            const allMemos = await sam_db.getAllMemosAsObject();
+            if (allMemos && Object.keys(allMemos).length > 0) serialized_db = Object.entries(allMemos).map(([k, v]) => `Key: ${k}\nContent: ${v}`).join('\n\n');
+        }
+        let serialized_memory_parts = [];
+        const levels = Object.keys(data.response_summary || {}).sort().reverse();
+        for (const level of levels) {
+            for (const summary of (data.response_summary[level] || [])) {
+                serialized_memory_parts.push(`[${level} Summary | Range: ${summary.index_begin}-${summary.index_end}]: ${summary.content}`);
+            }
+        }
+        return { serialized_memory: serialized_memory_parts.join('\n'), serialized_db };
+    }
+
+    async function processSummarizationRun(startIndex, endIndex) {
+        const settings = loadSamSettings();
+        const chat = SillyTavern.getContext().chat;
+        let data = await getVariables();
+
+        if (!data.response_summary || !data.response_summary.L2) data = { ...data, ...goodCopy(INITIAL_STATE) };
+
+        const messagesToSummarize = chat.slice(startIndex, endIndex);
+        if (messagesToSummarize.length === 0) return false;
+
+        const contentString = messagesToSummarize.map(msg => {
+            let processedMessage = msg.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim();
+            if (settings.regexes && Array.isArray(settings.regexes)) {
+                for (const regexObject of settings.regexes) {
+                    if (regexObject.enabled && regexObject.regex_body) {
+                        try { processedMessage = processedMessage.replace(new RegExp(regexObject.regex_body, 'g'), ''); } catch (e) {}
+                    }
+                }
+            }
+            return `${msg.name}: ${processedMessage}`;
+        }).join('\n');
+
+        const { serialized_db } = await serializeMemory(data);
+        const prompt = substituteParamsExtended(settings.summary_prompt, { db_content: serialized_db, chat_content: contentString });
+
+        // Note: SAM-Util's quiet generation is NOT considered a "dry run" in the context of the main chat, 
+        // but it does not trigger the standard GENERATION_STARTED event seen by other plugins usually.
+        const result = await generateQuietPrompt({ quietPrompt: prompt, skipWIAN: settings.skipWIAN_When_summarizing });
+        
+        if (!result || sam_fsm_state === SAM_STATES.ABORTED) {
+            logger.warn("Summarization aborted/failed. FSM will Reset to IDLE.");
+            return false;
+        }
+
+        const { summaryContent, newInserts } = parseAiResponseForL2(result);
+
+        if (summaryContent) {
+            data.response_summary.L2.push(new Summary(startIndex, endIndex, summaryContent, 0));
+            for (const item of newInserts) await sam_db.setMemo(item.key, item.content, item.keywords);
+            
+            // Increment Progress
+            data.summary_progress = endIndex;
+
+            const mem = await serializeMemory(data);
+            data.serialized_memory = mem.serialized_memory;
+            data.serialized_db = mem.serialized_db;
+            if (sam_db && sam_db.isInitialized) data.jsondb = sam_db.export();
+
+            await sam_set_data(data);
+            return true;
+        }
+        return false;
+    }
+
+    const handlers = {
+        // [NEW] Capture Start to detect Dry Runs
+        handleGenerationStarted: async (type, options, dry_run) => {
+            if (dry_run) {
+                current_run_is_dry = true;
+                // logger.info("Detected Dry Run start. SAM-Util will ignore this cycle.");
+            } else {
+                current_run_is_dry = false;
+            }
+        },
+
+        handleGenerationEnded: async () => {
+            // [NEW] Ignore if it was a dry run
+            if (current_run_is_dry) {
+                current_run_is_dry = false;
+                return;
+            }
+            await SAM_FSM.triggerCheck();
+        },
+
+        handleGenerationStopped: async() => {
+            // [NEW] Ignore stops if they were for a dry run
+            if (current_run_is_dry) {
+                return;
+            }
+            SAM_FSM.handleInterruption();
+        },
+
+        handleSwipe: async() => {
+            // Swipes are never dry runs in this context
+            SAM_FSM.handleInterruption();
+        }
+    };
+
+    module.exports = {
+        sam_get_data, sam_set_data, sam_summary, sam_get_settings, sam_set_setting: saveSamSettings
+    };
+
+    (() => {
+        $(async () => {
+            console.log("SAM: DOM content loaded. Initializing FSM...");
+            try {
+                loadSamSettings();
+                await initializeDatabase();
+
+                // [NEW] Added STARTED listener
+                eventSource.on(eventTypes.GENERATION_STARTED, handlers.handleGenerationStarted);
+                eventSource.on(eventTypes.GENERATION_ENDED, handlers.handleGenerationEnded);
+                eventSource.on(eventTypes.GENERATION_STOPPED, handlers.handleGenerationStopped);
+                eventSource.on(eventSource.MESSAGE_SWIPED, handlers.handleSwipe);
+                
+                registerMacro('SAM_serialized_memory', async () => (await sam_get_data())?.serialized_memory || "");
+                registerMacro('SAM_serialized_db', async () => (await sam_get_data())?.serialized_db || "");
+
+                logger.info(`V${SCRIPT_VERSION} FSM Utility loaded.`);
+            } catch (error) {
+                console.error("SAM: Initialization error.", error);
+            }
+        });
+    })();
+})();

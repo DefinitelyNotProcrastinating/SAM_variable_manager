@@ -1,356 +1,247 @@
 // ============================================================================
-// == Situational Awareness Manager Util
+// == Situational Awareness Manager (backend.js)
 // ============================================================================
-// ****************************
-// Required plugins: JS-slash-runner by n0vi028
-// ****************************
-
-
 (function () {
     // --- CONFIGURATION ---
     const SCRIPT_NAME = "SAM-Util";
-    const SCRIPT_VERSION = "4.0.5";
-    const JSON_REPAIR_URL = "https://cdn.jsdelivr.net/npm/jsonrepair/lib/umd/jsonrepair.min.js";
+    const SCRIPT_VERSION = "5.4.5"; // Bumped for Schema Enforcement
+    const { Summary } = require('./Summary.js');
+    const { SAMDatabase } = require('./SAMDatabase.js');
+    const { registerMacro } = SillyTavern.getContext();
 
+    // --- FSM STATES ---
+    const SAM_STATES = {
+        IDLE: "IDLE",             
+        CHECKING: "CHECKING",     
+        GENERATING: "GENERATING", 
+        ABORTED: "ABORTED"        
+    };
+
+    let sam_fsm_state = SAM_STATES.IDLE;
+    
+    // --- DRY RUN TRACKING ---
+    let current_run_is_dry = false;
+
+    // Core Settings
     const DEFAULT_SETTINGS = {
         enabled: true,
-        // disable_dtype_mutation: false, // Moved to SAM_data (state)
-        // uniquely_identified: false,   // Moved to SAM_data (state)
         enable_auto_checkpoint: true,
+        l2_summary_period: 20, 
         skipWIAN_When_summarizing: false,
-        checkpoint_frequency: 20,
-        summary_prompt: 'Condense the following chat messages into a concise summary of the most important facts and events. If a previous summary is provided, use it as a base and expand on it with new information. Limit the new summary to {{words}} words or less. Your response should include nothing but the summary.',
-        summary_frequency: 30,
-        summary_words: 150
+        regexes: [],
+        summary_prompt: `请仔细审查下方提供的聊天记录和现有设定。你的任务包含两部分，并需严格按照指定格式输出：
+
+1.  **L2摘要**: 将“新内容”合并成一段连贯的摘要。在摘要中，每个对应原始消息的事件都必须在其句首注明编号。例如：【1】甘道夫和佛罗多见了面... 【2】佛罗多一行人前往了瑞文戴尔...
+
+2.  **插入指令**: 对比“新内容”和“现有设定”。只为那些在“现有设定”中**不存在**的关键信息（如新角色、新地点、关键物品或设定）生成插入指令。指令格式为：
+    @.insert(key="unique_key", content="详细描述", keywords=["关键词1", "关键词2"])
+
+**最终输出格式要求：**
+必须先输出完整的L2摘要，然后另起一行输出所有的 @.insert() 指令。不要添加任何其他文字、标题或解释。
+
+---
+现有设定:
+{{db_content}}
+---
+新内容:
+{{chat_content}}
+---
+`,
     };
 
     let sam_settings = { ...DEFAULT_SETTINGS };
+    let sam_db = null;
 
-    // State block format markers
+    // --- MARKERS & REGEX ---
     const OLD_START_MARKER = '<!--<|state|>';
     const OLD_END_MARKER = '</|state|>-->';
     const NEW_START_MARKER = '$$$$$$data_block$$$$$$';
     const NEW_END_MARKER = '$$$$$$data_block_end$$$$$$';
     const STATE_BLOCK_START_MARKER = NEW_START_MARKER;
     const STATE_BLOCK_END_MARKER = NEW_END_MARKER;
-    
-    // [NEW] Logic Gate Constant
+
+    const STATE_BLOCK_REMOVE_REGEX = new RegExp(`(?:${OLD_START_MARKER.replace(/\|/g, '\\|')}|${NEW_START_MARKER.replace(/\$/g, '\\$')})\\s*[\\s\\S]*?\\s*(?:${OLD_END_MARKER.replace(/\|/g, '\\|')}|${NEW_END_MARKER.replace(/\$/g, '\\$')})`, 'sg');
+
     const SAM_ACTIVATION_KEY = "__SAM_IDENTIFIER__";
     const MODULE_NAME = 'sam_extension';
-
-
-    const SAM_EVENTS = {
-        CORE_UPDATED: 'SAM_CORE_UPDATED',            // Emitted by Core when state is updated
-        EXT_ASK_STATUS: 'SAM_EXT_ASK_STATUS',        // Emitted by Extension to ask for status
-        CORE_STATUS_RESPONSE: 'SAM_CORE_STATUS_RESPONSE', // Emitted by Core in response to status ask
-        EXT_COMMIT_STATE: 'SAM_EXT_COMMIT_STATE',       // Emitted by Extension to save a full state object
-        CORE_IDLE: 'SAM_CORE_IDLE', // Emitted by core in response to an ask
-        INV:'SAM_INV' // data invalid. must re-fetch data.
+    
+    const SAM_EVENTS = { 
+        INV: 'SAM_INV',
+        EXT_ASK_STATUS: 'SAM_EXT_ASK_STATUS',
+        CORE_STATUS_RESPONSE: 'SAM_CORE_STATUS_RESPONSE',
+        SUMMARY_ERR : "SAM_SUMMARY_ERR"
     };
 
-    var { eventSource, eventTypes, extensionSettings, saveSettingsDebounced, generateQuietPrompt, getTokenCountAsync,substituteParamsExtended} = SillyTavern.getContext();
+    var { eventSource, eventTypes, extensionSettings, saveSettingsDebounced, generateQuietPrompt, substituteParamsExtended } = SillyTavern.getContext();
     var _ = require('lodash');
-
-    
-    const STATES = { IDLE: "IDLE", AWAIT_GENERATION: "AWAIT_GENERATION", PROCESSING: "PROCESSING" };
-
-    var currStatus = STATES.IDLE;
-    var shouterName = "";
-
-    // Flag to pause execution based on World Info presence
     var go_flag = false;
     
-    // [NEW] Callback for React UI
-    var _ui_update_callback = null;
-
-    // Regexes for parsing and removing state blocks from messages
-    const STATE_BLOCK_PARSE_REGEX = new RegExp(`(?:${OLD_START_MARKER.replace(/\|/g, '\\|')}|${NEW_START_MARKER.replace(/\$/g, '\\$')})\\s*([\\s\\S]*?)\\s*(?:${OLD_END_MARKER.replace(/\|/g, '\\|')}|${NEW_END_MARKER.replace(/\$/g, '\\$')})`, 's');
-    const STATE_BLOCK_REMOVE_REGEX = new RegExp(`(?:${OLD_START_MARKER.replace(/\|/g, '\\|')}|${NEW_START_MARKER.replace(/\$/g, '\\$')})\\s*[\\s\\S]*?\\s*(?:${OLD_END_MARKER.replace(/\|/g, '\\|')}|${NEW_END_MARKER.replace(/\$/g, '\\$')})`, 'sg');
-    const COMMAND_START_REGEX = /@\.(SET|ADD|DEL|SELECT_ADD|DICT_DEL|SELECT_DEL|SELECT_SET|TIME|TIMED_SET|RESPONSE_SUMMARY|CANCEL_SET|EVENT_BEGIN|EVENT_END|EVENT_ADD_PROC|EVENT_ADD_DEFN|EVENT_ADD_MEMBER|EVENT_SUMMARY|EVAL)\b\s*\(/gim;
-    
-    // The pure state object, stripped of configuration.
-    const INITIAL_STATE = { static: {}, time: "", volatile: [], responseSummary: [], func: [], events: [], event_counter: 0 };
-
-    // Performance tuning based on device type
-    const isMobileDevice = /Android|webOS|iPhone|iPad|iPod|BlackBerry|IEMobile|Opera Mini/i.test(navigator.userAgent);
-    const DELAY_MS = isMobileDevice ? 10 : 5;
-    const executionLog = [];
-
-    const HANDLER_STORAGE_KEY = `__SAM_V4_EVENT_HANDLER_STORAGE__`;
-    const SESSION_STORAGE_KEY = "__SAM_ID__";
-    var session_id = "";
+    const INITIAL_STATE = {
+        static: {},
+        time: "",
+        volatile: [],
+        func: [],
+        events: [],
+        event_counter: 0,
+        response_summary: { L1: [], L2: [], L3: [] }, 
+        summary_progress: 0, 
+        jsondb: null, 
+        serialized_memory: "",
+        serialized_db: "",
+        last_saved_index: -1 
+    };
 
     const logger = {
-        info: (...args) => {
-            const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' ');
-            executionLog.push({ level: 'INFO', timestamp: new Date().toISOString(), message });
-            console.log(`[${SCRIPT_NAME} ${SCRIPT_VERSION}]`, ...args);
+        info: (...args) => console.log(`[${SCRIPT_NAME}]`, ...args),
+        warn: (...args) => console.warn(`[${SCRIPT_NAME}]`, ...args),
+        error: (...args) => console.error(`[${SCRIPT_NAME}]`, ...args)
+    };
+
+    // ============================================================================
+    // == FSM CORE LOGIC
+    // ============================================================================
+
+    const SAM_FSM = {
+        triggerCheck: async function() {
+            return this.Check();
         },
-        warn: (...args) => {
-            const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' ');
-            executionLog.push({ level: 'WARN', timestamp: new Date().toISOString(), message });
-            console.warn(`[${SCRIPT_NAME} ${SCRIPT_VERSION}]`, ...args);
+
+        Check: async function() {
+            if (sam_fsm_state === SAM_STATES.GENERATING) return;
+
+            sam_fsm_state = SAM_STATES.CHECKING;
+            await checkWorldInfoActivation();
+            const settings = loadSamSettings();
+
+            if (!go_flag || !settings.enabled) {
+                sam_fsm_state = SAM_STATES.IDLE;
+                return;
+            }
+
+            const data = await getVariables();
+            const chat = SillyTavern.getContext().chat;
+            
+            const last_progress = data.summary_progress || 0;
+            const period = settings.l2_summary_period || 20;
+            const current_msg_count = chat.length;
+            const messages_since_last_summary = current_msg_count - last_progress;
+
+            if (messages_since_last_summary >= period) {
+                logger.info(`FSM Check: Threshold reached (Gap: ${messages_since_last_summary}/${period}). Initiating Summary.`);
+                await this.startGeneration(last_progress, current_msg_count);
+            } else {
+                sam_fsm_state = SAM_STATES.IDLE;
+            }
         },
-        error: (...args) => {
-            const message = args.map(arg => typeof arg === 'object' ? JSON.stringify(arg, null, 2) : arg).join(' ');
-            executionLog.push({ level: 'ERROR', timestamp: new Date().toISOString(), message });
-            console.error(`[${SCRIPT_NAME} ${SCRIPT_VERSION}]`, ...args);
+
+        startGeneration: async function(startIndex, endIndex) {
+            sam_fsm_state = SAM_STATES.GENERATING;
+            try {
+                const success = await processSummarizationRun(startIndex, endIndex);
+                if (success) {
+                    logger.info("FSM: Generation Success.");
+                }
+            } catch (err) {
+                logger.error("FSM: Error during generation cycle.", err);
+                await eventSource.emit(SAM_EVENTS.SUMMARY_ERR);
+            } finally {
+                sam_fsm_state = SAM_STATES.IDLE;
+            }
+        },
+
+        handleInterruption: function() {
+            if (sam_fsm_state === SAM_STATES.GENERATING) {
+                logger.info("FSM: Interruption detected. Marking state as Aborted.");
+                sam_fsm_state = SAM_STATES.ABORTED;
+            }
         }
     };
 
-
+    // ============================================================================
+    // == SETTINGS & UTILS
+    // ============================================================================
     function loadSamSettings() {
-        if (!extensionSettings[MODULE_NAME]) {
-            extensionSettings[MODULE_NAME] = structuredClone(DEFAULT_SETTINGS);
-        }
-        for (const key of Object.keys(DEFAULT_SETTINGS)) {
-            if (!Object.hasOwn(extensionSettings[MODULE_NAME], key)) {
-                extensionSettings[MODULE_NAME][key] = DEFAULT_SETTINGS[key];
-            }
-        }
+        if (!extensionSettings[MODULE_NAME]) extensionSettings[MODULE_NAME] = structuredClone(DEFAULT_SETTINGS);
+        _.defaultsDeep(extensionSettings[MODULE_NAME], DEFAULT_SETTINGS);
         return extensionSettings[MODULE_NAME];
     }
-
-    async function saveSamSettings(key, value){
-        try {
-            var settings = loadSamSettings();
-            if(typeof key === 'object' && key !== null && !Array.isArray(key)) {
-                 Object.assign(settings, key);
-            } else {
-                 settings[key] = value;
-            }
-            saveSettingsDebounced();
-            logger.info("SAM settings saved successfully.");
-        } catch (error) {
-            logger.error("Failed to save SAM settings.", error);
-            toastr.error("Failed to save SAM settings.");
-        }
-    }
-
-    // Cohee this is your fault
-    // Time-complexity wise what even is the difference between selecting with index and selecting with a hashmap
-    function formatArrayDict(dictarrayinput){
-
-        let result = [];
-        let keys = Object.keys(dictarrayinput);
-        for (let key of  keys){
-            result.push(dictarrayinput[key])
-        }
-        return result;
-    }
-
+    async function saveSamSettings(key, value) { var s = loadSamSettings(); _.set(s, key, value); saveSettingsDebounced(); }
+    
     async function checkWorldInfoActivation() {
         try {
-            var wi;
-            try{
-             wi = await getCurrentWorldbookName();
-            }catch (e){
-                logger.info(`[SAM util] WI not found. Presumably no character is loaded.`);
-                return;
-            }
-
-            if (!wi){
-                logger.info(`[SAM util] WI not found. Presumably no character is loaded.`)
-                return;
-            }
-
-            let wi_entry_arr = formatArrayDict(wi.entries);
-
-            let verified_go_flag = false;
-
-            for (let item of wi_entry_arr){
-                if (item.comment === SAM_ACTIVATION_KEY){
-                    logger.info(`[SAM util] Activation Key "${SAM_ACTIVATION_KEY}" ${go_flag ? 'FOUND' : 'MISSING'}. Script is ${go_flag ? 'ACTIVE' : 'DORMANT'}.`);
-                    verified_go_flag = true;
-                    break;
-                }
-            }
-
-
-            if (!verified_go_flag){
-                //logger.info(`[SAM util] Did not find activation key in card`);
-                let found_entries = [];
-                for (let item of wi_entry_arr){
-                    found_entries.push(item.comment);
-                }
-                //logger.info(`[SAM util] found ${JSON.stringify(found_entries)}`)
-            }
-            go_flag = verified_go_flag;
-
-            
-
-        } catch (e) {
-            logger.error("[SAM util] Error checking world info activation:", e);
-            go_flag = false;
-        }
+            const wi = await getCurrentWorldbookName();
+            if (!wi) return;
+            const wi_entry_arr = Object.values(wi.entries);
+            go_flag = wi_entry_arr.some(item => item.comment === SAM_ACTIVATION_KEY);
+        } catch (e) { go_flag = false; }
     }
 
-
-
-    async function getVariables(){
-        if (!SillyTavern.getContext().variables.local.get("SAM_data")){
-            return {};
-        }
+    async function getVariables() {
         let data = SillyTavern.getContext().variables.local.get("SAM_data");
+        if (!data || typeof data !== 'object') {
+            data = goodCopy(INITIAL_STATE);
+        } else {
+            // Soft merge defaults without overwriting existing data
+            _.defaultsDeep(data, INITIAL_STATE);
+        }
         return data;
     }
 
-    async function setAllVariables(newData){
-        if (!newData || typeof newData !== 'object'){
-            return;
+    function sync_getVariables() {
+        let data = SillyTavern.getContext().variables.local.get("SAM_data");
+        if (!data || typeof data !== 'object') {
+            data = goodCopy(INITIAL_STATE);
+        } else {
+            // Soft merge defaults without overwriting existing data
+            _.defaultsDeep(data, INITIAL_STATE);
         }
-        SillyTavern.getContext().variables.local.set("SAM_data", newData);
-        return 0;
+        return data;
     }
-    
-    // [MODIFIED] Trigger UI callback here to ensure frontend sees exactly what is in memory
-    // very inelegant. since there is no distinct frontend or backend, just let UI get it.
-    // UI will now listen to the other things.
-    async function sam_renewVariables(SAM_data){
 
-        let curr_variables = await getVariables();
-
-        if ((!curr_variables) && (!curr_variables.SAM_data)){
-            console.log("[SAM] tried to renew, but SAM_data variable not found! Initializing.");
-            curr_variables = { SAM_data: {} };
+    async function setAllVariables(newData) { 
+        if (newData && typeof newData === 'object') {
+            SillyTavern.getContext().variables.local.set("SAM_data", newData); 
         }
-        _.set(curr_variables, "SAM_data", goodCopy(SAM_data));
+    }
+
+    async function sam_renewVariables(SAM_data) {
+        let curr_variables = goodCopy(SAM_data);
         await setAllVariables(curr_variables);
-        
+        await initializeDatabase(SAM_data.jsondb);
         await eventSource.emit(SAM_EVENTS.INV);
-        return 0;
     }
 
-    async function hearStatus(obj){
-
-            currStatus = obj.state;
-            shouterName = obj.name;
-            console.log(JSON.stringify(obj));
-            logger.info(`[SAM] got status ${JSON.stringify(currStatus)} broadcasted by ${JSON.stringify(shouterName)}`);
-        
-    }
-
-    function goodCopy(state) {
-        if (!state) return _.cloneDeep(INITIAL_STATE);
-        try {
-            return JSON.parse(JSON.stringify(state));
-        } catch (error) {
-            logger.warn('goodCopy: JSON method failed, falling back to _.cloneDeep', error);
-            return _.cloneDeep(state);
-        }
-    }
-
-
-    async function sam_getWorldbook(name) {
-        let index = 0;
-        for (let i = 0; i < SillyTavern.getContext().characters.length; i++) {
-            if (SillyTavern.getContext().characters[i].name === name) {
-                index = i;
-                break;
-            }
-        }
-        if (index < 0 || index >= SillyTavern.getContext().characters.length) {
-            return {};
-        }
-        let winame = SillyTavern.getContext().characters[index].data.extensions.world
-        let wi = SillyTavern.getContext().loadWorldInfo(winame);
-        return wi
-    }
-
-    async function getCurrentWorldbookName() {
-        let curr_name = SillyTavern.getContext().characters[SillyTavern.getContext().characterId].name;
-        return await sam_getWorldbook(curr_name);
-    }
-
-    async function getBaseDataFromWI() {
-        const WI_ENTRY_NAME = "__SAM_base_data__";
-        try {
-            const wi = await getCurrentWorldbookName();
-            if (!wi || !Array.isArray(wi)) {
-                return null;
-            }
-            const baseDataEntry = wi.find(entry => entry.name === WI_ENTRY_NAME);
-            if (!baseDataEntry || !baseDataEntry.content) {
-                return null;
-            }
-            try {
-                const parsedData = JSON.parse(baseDataEntry.content);
-                logger.info(`Successfully parsed base data from "${WI_ENTRY_NAME}".`);
-                return parsedData;
-            } catch (jsonError) {
-                logger.error(`Base data check: Failed to parse JSON from entry "${WI_ENTRY_NAME}".`, jsonError);
-                return null;
-            }
-        } catch (error) {
-            logger.error(`Base data check: An unexpected error occurred while fetching world info.`, error);
-            return null;
-        }
-    }
+    function goodCopy(state) { if (!state) return _.cloneDeep(INITIAL_STATE); return JSON.parse(JSON.stringify(state)); }
     
-
-
-    async function chunkedStringify(obj) {
-        return new Promise((resolve) => {
-            setTimeout(() => {
-                try {
-                    resolve(JSON.stringify(obj, null, 2));
-                } catch (error) {
-                    logger.error('JSON stringify failed:', error);
-                    resolve('{}');
-                }
-            }, DELAY_MS);
-        });
+    async function getCurrentWorldbookName() {
+        const characterId = SillyTavern.getContext().characterId;
+        if (characterId === null || characterId < 0) return null;
+        const char = SillyTavern.getContext().characters[characterId];
+        const worldInfoName = char?.data?.extensions?.world;
+        return worldInfoName ? await SillyTavern.getContext().loadWorldInfo(worldInfoName) : null;
     }
 
-
-    async function findLastAiMessageAndIndex(beforeIndex = -1) {
+    async function findLastAiMessageAndIndex() {
         const chat = SillyTavern.getContext().chat;
-        const searchUntil = (beforeIndex === -1) ? chat.length : beforeIndex;
-        for (let i = searchUntil - 1; i >= 0; i--) {
-            if (chat[i] && chat[i].is_user === false) return i;
-        }
+        for (let i = chat.length - 1; i >= 0; i--) { if (chat[i] && !chat[i].is_user) return i; }
         return -1;
     }
+    async function chunkedStringify(obj) { return new Promise(resolve => setTimeout(() => resolve(JSON.stringify(obj, null, 2)), 10)); }
 
-    
-    // event listeners.
-    const handlers = {
-
-        handleShout: async(state, name) => {
-            await hearStatus(state, name);
-        },
-        handleGenerationEnded: async() => {
-            
-            let settings = sam_get_settings();
-            if (SillyTavern.getContext().chat.length % settings.summary_frequency === 0
-        && SillyTavern.getContext().chat.length > 1){
-                logger.info("[SAM] Triggered summary naturally")
-                await summary();
-            }
-
-        }
-    };
-
-
-
-
-
-    
     // ============================================================================
-    // == EXPOSED API FOR EXTERNAL SCRIPTS
+    // == API
     // ============================================================================
+    async function sam_is_in_use() {
+        const settings = loadSamSettings();
+        return !!settings.enabled;
+    }
+
+    function sam_get_status() {
+        return sam_fsm_state;
+    }
+
+    async function sam_get_data() { return await getVariables(); }
     
-
-    async function sam_get_data() {
-        try {
-            const variables = await getVariables();
-            return variables;
-        } catch (error) {
-            logger.error("[External API] Failed to get SAM_data from variables.", error);
-            return null;
-        }
-    };
-
     async function sam_set_data(newData) {
         if (typeof newData !== 'object' || newData === null) {
             toastr.error("SAM API: sam_set_data requires a valid object.");
@@ -362,199 +253,223 @@
                 toastr.error("SAM API: Cannot set data. No AI message found.");
                 return;
             }
-            const lastAiMessage = SillyTavern.getContext().chat[lastAiIndex];
+            
+            // 1. Update Variables
+            await sam_renewVariables(newData);
+
+            // 2. Persist to Chat (Checkpoint logic)
+            const chat = SillyTavern.getContext().chat;
+            const lastAiMessage = chat[lastAiIndex];
+            
             const cleanNarrative = lastAiMessage.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim();
             const newStateBlock = await chunkedStringify(newData);
             const finalContent = `${cleanNarrative}\n\n${STATE_BLOCK_START_MARKER}\n${newStateBlock}\n${STATE_BLOCK_END_MARKER}`;
+            
             await TavernHelper.setChatMessages([{'message_id': lastAiIndex, 'message': finalContent}]);
-            await sam_renewVariables(newData);
+            
             toastr.success("SAM API: Data block updated successfully!");
         } catch (error) {
             logger.error("[External API] sam_set_data failed.", error);
             toastr.error("SAM API: Failed to set data. Check console.");
-        } finally {
+        }
+    };
+    
+    async function sam_summary() {
+        logger.info("[SAM utils] Manual summary trigger");
+        const chat = SillyTavern.getContext().chat;
+        const data = await getVariables();
+        SAM_FSM.startGeneration(data.summary_progress || 0, chat.length);
+    }
+
+    // ============================================================================
+    // == WORKER
+    // ============================================================================
+    async function initializeDatabase(dbStateJson = null) {
+        sam_db = new SAMDatabase({ enabled: true });
+        await sam_db.init();
+        if (dbStateJson && typeof dbStateJson === 'string') { try { sam_db.import(dbStateJson); } catch (error) { } }
+    }
+
+    function parseAiResponseForL2(rawResponse) {
+        const inserts = [];
+        const insertCommandRegex = /@\.insert\s*\(([\s\S]*?)\)/gi;
+        
+        const summaryContent = rawResponse.replace(insertCommandRegex, (match, argsStr) => {
+            try {
+                let args;
+                try {
+                    args = JSON.parse(`{${argsStr}}`);
+                } catch (jsonErr) {
+                    const fixedStr = argsStr
+                        .replace(/key=/g, '"key":')
+                        .replace(/content=/g, '"content":')
+                        .replace(/keywords=/g, '"keywords":');
+                    
+                    try {
+                        args = JSON.parse(`{${fixedStr}}`);
+                    } catch (e2) { }
+                }
+
+                if (args && args.key && args.content && Array.isArray(args.keywords)) {
+                    inserts.push({ key: args.key, content: args.content.trim(), keywords: args.keywords });
+                }
+            } catch (error) { }
+            return ''; 
+        }).trim();
+
+        return { summaryContent, newInserts: inserts };
+    }
+
+    async function serializeMemory(data) {
+        let serialized_db = "尚未储存任何设定。";
+        if (sam_db && sam_db.isInitialized) {
+            const allMemos = await sam_db.getAllMemosAsObject();
+            if (allMemos && Object.keys(allMemos).length > 0) serialized_db = Object.entries(allMemos).map(([k, v]) => `Key: ${k}\nContent: ${v}`).join('\n\n');
+        }
+        let serialized_memory_parts = [];
+        const levels = Object.keys(data.response_summary || {}).sort().reverse();
+        for (const level of levels) {
+            for (const summary of (data.response_summary[level] || [])) {
+                serialized_memory_parts.push(`[${level} Summary | Range: ${summary.index_begin}-${summary.index_end}]: ${summary.content}`);
+            }
+        }
+        return { serialized_memory: serialized_memory_parts.join('\n'), serialized_db };
+    }
+
+    async function processSummarizationRun(startIndex, endIndex) {
+        const settings = loadSamSettings();
+        const chat = SillyTavern.getContext().chat;
+        let data = await getVariables();
+        data = goodCopy(data);
+
+        // [FIX] Schema Enforcement for Summary
+        // 1. Ensure response_summary object exists
+        if (!data.response_summary || typeof data.response_summary !== 'object') {
+            data.response_summary = { L1: [], L2: [], L3: [] };
+        }
+        
+        // 2. Ensure Schema Levels exist (Append if missing)
+        // If they don't exist, we create them as empty arrays.
+        // If they exist, we keep them as is (to append later).
+
+        if (!Array.isArray(data.response_summary.L1)) data.response_summary.L1 = [];
+        if (!Array.isArray(data.response_summary.L2)) data.response_summary.L2 = [];
+        if (!Array.isArray(data.response_summary.L3)) data.response_summary.L3 = [];
+
+        const messagesToSummarize = chat.slice(startIndex, endIndex);
+        if (messagesToSummarize.length === 0) return false;
+
+        const contentString = messagesToSummarize.map(msg => {
+            let processedMessage = msg.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim();
+            if (settings.regexes && Array.isArray(settings.regexes)) {
+                for (const regexObject of settings.regexes) {
+                    if (regexObject.enabled && regexObject.regex_body) {
+                        try { processedMessage = processedMessage.replace(new RegExp(regexObject.regex_body, 'g'), ''); } catch (e) {}
+                    }
+                }
+            }
+            return `${msg.name}: ${processedMessage}`;
+        }).join('\n');
+
+        const { serialized_db } = await serializeMemory(data);
+        const prompt = substituteParamsExtended(settings.summary_prompt, { db_content: serialized_db, chat_content: contentString });
+
+        const result = await generateQuietPrompt({ quietPrompt: prompt, skipWIAN: settings.skipWIAN_When_summarizing });
+        
+        if (!result || sam_fsm_state === SAM_STATES.ABORTED) {
+            logger.warn("Summarization aborted/failed. FSM will Reset to IDLE.");
+            return false;
+        }
+
+        const { summaryContent, newInserts } = parseAiResponseForL2(result);
+
+        if (summaryContent) {
+            // 3. Append to L2 (as per logic)
+            data.response_summary.L2.push(new Summary(startIndex, endIndex, summaryContent, 0));
+            
+            if (newInserts && Array.isArray(newInserts)) {
+                for (const item of newInserts) await sam_db.setMemo(item.key, item.content, item.keywords);
+            }
+            
+            data.summary_progress = endIndex;
+
+            const mem = await serializeMemory(data);
+            data.serialized_memory = mem.serialized_memory;
+            data.serialized_db = mem.serialized_db;
+            if (sam_db && sam_db.isInitialized) data.jsondb = sam_db.export();
+
+            logger.info("FINISHED UPDATING DATA");
+            logger.info(data);
+
+            // synchronization: Await for 100ms for the other guy to finish first. It'a light script, it will succeed.
+            setTimeout(() => {
+                sam_set_data(data);
+            }, 100);
+
+
+            await eventSource.emit(SAM_EVENTS.INV); // prompt for App.js to refresh
+            return true;
+        }
+        return false;
+    }
+
+    const handlers = {
+        handleGenerationStarted: async (type, options, dry_run) => {
+            if (dry_run) current_run_is_dry = true;
+            else current_run_is_dry = false;
+        },
+        handleGenerationEnded: async () => {
+            if (current_run_is_dry) { current_run_is_dry = false; return; }
+            await SAM_FSM.triggerCheck();
+        },
+        handleGenerationStopped: async() => {
+            if (current_run_is_dry) return;
+            SAM_FSM.handleInterruption();
+        },
+        handleSwipe: async() => {
+            SAM_FSM.handleInterruption();
         }
     };
 
-    async function sam_enable(){
-        sam_settings.enabled = true;
-        toastr.success("[SAM utils] summary has been enabled.");
-        await saveSamSettings();
-    }
-
-    async function sam_disable(){
-        sam_settings.enabled = false;
-        toastr.success("[SAM utils] summary has been disabled.");
-        await saveSamSettings();
-    }
-
-    async function summary() {
-        try {
-            logger.info("[SAM] Starting summary generation...");
-            const settings = loadSamSettings();
-            const context = SillyTavern.getContext();
-            const chat = context.chat;
-    
-            if (chat.length === 0) {
-                logger.info("[SAM] No chat messages to summarize.");
-                return;
-            }
-
-            checkWorldInfoActivation();
-            if (!go_flag){return;}
-    
-            // 1. Get previous data and messages to summarize
-            let current_data = await getVariables();
-            const previousSummary = Array.isArray(current_data.responseSummary) && current_data.responseSummary.length > 0
-                ? current_data.responseSummary[current_data.responseSummary.length - 1]
-                : "";
-    
-            const messagesToSummarize = chat.slice(-settings.summary_frequency);
-            const messageText = messagesToSummarize
-                .map(msg => `${msg.name}: ${msg.mes.replace(STATE_BLOCK_REMOVE_REGEX, '').trim()}`)
-                .join('\n');
-    
-            // 2. Construct the text for the AI
-            let textForSummarization = messageText;
-            if (previousSummary) {
-                textForSummarization = `PREVIOUS SUMMARY:\n${previousSummary}\n\nNEW MESSAGES TO ADD:\n${messageText}`;
-            }
-    
-            const promptTemplate = substituteParamsExtended(settings.summary_prompt, { words: settings.summary_words });
-            let fullPromptForAI = `${textForSummarization}\n\nINSTRUCTIONS:\n${promptTemplate}`;
-            /** @type {import('../../../../../script.js').GenerateQuietPromptParams} */
-            const params = {
-                            quietPrompt: fullPromptForAI,
-                            skipWIAN: settings.skipWIAN_When_summarizing,
-                            responseLength: extensionSettings.memory.overrideResponseLength,
-                        };
-            // 3. Check and handle token limits
-            const maxContextTokens = 1000000;
-            const promptBudget = maxContextTokens - (settings.summary_words * 1.5); // Buffer for response
-    
-            let tokenCount = await getTokenCountAsync(fullPromptForAI);
-    
-            if (tokenCount > promptBudget) {
-                logger.warn(`[SAM] Prompt is too long (${tokenCount} tokens), truncating...`);
-                const lines = textForSummarization.split('\n');
-                while (tokenCount > promptBudget && lines.length > 1) {
-                    lines.shift(); // Remove oldest lines first
-                    textForSummarization = lines.join('\n');
-                    fullPromptForAI = `${textForSummarization}\n\nINSTRUCTIONS:\n${promptTemplate}`;
-                    tokenCount = await getTokenCountAsync(fullPromptForAI);
-                }
-            }
-            
-            if (tokenCount > promptBudget) {
-                logger.error(`[SAM] Prompt is still too long after truncation (${tokenCount} tokens). Aborting summary.`);
-                return;
-            }
-    
-            // 4. Call the AI to get the summary
-            logger.info("[SAM] Sending request to AI for summarization.");
-            const summary_result = await generateQuietPrompt(params);
-    
-            if (!summary_result || summary_result.trim().length === 0) {
-                logger.warn("[SAM utils] Summary generation returned an empty result.");
-                toastr.error("[SAM utils] Summary generation returned empty result. Is your API ready?");
-                return;
-            }
-    
-            logger.info("[SAM] Received summary from AI.");
-            
-            // 5. Update the state with the new summary
-            let updated_data = await getVariables();
-            updated_data = goodCopy(updated_data);
-    
-            if (!Array.isArray(updated_data.responseSummary)) {
-                updated_data.responseSummary = [];
-            }
-            updated_data.responseSummary.push(summary_result.trim());
-    
-            if (currStatus !== STATES.IDLE) {
-                logger.info("[SAM] Core is busy. Waiting for IDLE state before saving summary checkpoint.");
-                const maxWaitTime = 150000; // 150 seconds timeout
-                const checkInterval = 5000; // Check every 5 seconds
-                const startTime = Date.now();
-
-                while (currStatus !== STATES.IDLE) {
-                    if (Date.now() - startTime > maxWaitTime) {
-                        logger.error("[SAM] Timed out waiting for IDLE state. Summary will be saved on next successful operation.");
-                        toastr.error("Timed out waiting for core to be idle. Summary not saved as checkpoint.");
-                        return; // Exit the function to prevent saving while busy
-                    }
-                    
-                    logger.info(`[SAM] Current status is ${currStatus}. Requesting status update.`);
-                    await eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS);
-
-                    // Wait for a bit before checking again
-                    await new Promise(resolve => setTimeout(resolve, checkInterval));
-                }
-                logger.info("[SAM] Core is now IDLE. Proceeding to save summary.");
-            }
-    
-            logger.info("[SAM] Saving new summary as a checkpoint.");
-            await sam_set_data(updated_data);
-            toastr.success("[SAM util] Chat summary updated.");
-    
-        } catch (error) {
-            logger.error("[SAM] An error occurred during the summary process.", error);
-            toastr.error("[SAM util] Failed to generate chat summary.");
-        }
-    }
-
-    async function sam_summary(){
-        logger.info("[SAM utils] triggered summary manually");
-        await summary();
-    }
-
-    async function sam_set_setting(key, value) {
-        await saveSamSettings(key, value);
-    }
-
-    async function sam_is_in_use(){
-        await checkWorldInfoActivation();
-        return go_flag;
-    }
-    
-    function sam_get_settings() {
-        return loadSamSettings();
-    }
-
-    function sam_get_status(){
-        return currStatus;
-    }
     module.exports = {
-        sam_get_data,
-        sam_set_data,
-        sam_enable,
-        sam_disable,
+        sam_get_data, 
+        sam_set_data, 
+        sam_summary, 
+        sam_get_settings: loadSamSettings,
+        sam_set_setting: saveSamSettings,
         sam_is_in_use,
-        sam_get_status,
-        sam_set_setting,
-        sam_get_settings,
-        sam_summary
+        sam_get_status
     };
 
     (() => {
         $(async () => {
-            console.log("SAM: DOM content loaded. Initializing...");
+            console.log("SAM: DOM content loaded. Initializing FSM...");
             try {
                 loadSamSettings();
+                await initializeDatabase();
 
-                window[HANDLER_STORAGE_KEY] = handlers;
-
-                eventSource.on(SAM_EVENTS.CORE_STATUS_RESPONSE, handlers.handleShout);
+                eventSource.on(eventTypes.GENERATION_STARTED, handlers.handleGenerationStarted);
                 eventSource.on(eventTypes.GENERATION_ENDED, handlers.handleGenerationEnded);
+                eventSource.on(eventTypes.GENERATION_STOPPED, handlers.handleGenerationStopped);
+                eventSource.on(eventSource.MESSAGE_SWIPED, handlers.handleSwipe);
                 
-                logger.info(`V${SCRIPT_VERSION} Utility loaded.`);
-                session_id = JSON.stringify(new Date());
-                sessionStorage.setItem(SESSION_STORAGE_KEY, session_id);
+                eventSource.on(SAM_EVENTS.EXT_ASK_STATUS, () => {
+                    eventSource.emit(SAM_EVENTS.CORE_STATUS_RESPONSE, { state: sam_fsm_state });
+                });
 
+                registerMacro('SAM_serialized_memory',  () => {
+
+                    return sync_getVariables()?.serialized_memory || "";
+
+                });
+                registerMacro('SAM_serialized_db',  () => {
+                    return sync_getVariables()?.serialized_db || "" ;
+                });
+
+                logger.info(`V${SCRIPT_VERSION} FSM Utility loaded.`);
             } catch (error) {
-                console.error("SAM: A fatal error occurred during initialization.", error);
+                console.error("SAM: Initialization error.", error);
             }
         });
     })();
-
 })();
