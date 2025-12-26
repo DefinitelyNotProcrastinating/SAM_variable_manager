@@ -113,8 +113,6 @@ AI 是很聪明的，也是很蠢的。
 2.  **AI 的任务只是由果推因**。AI 看到 `state.static.resources.gold` 变多了（通过 EJS 读取），它只需要在描写里写：“看来这周收成不错。”
 3.  **如果需要 AI 触发战斗计算**：封装一个简单的指令给它。
     *   告诉 AI：攻击时请用 `@.EVAL(attack_enemy, self_id, target_id)`。
-    *   **不要**告诉 AI：你可以用 `calc_damage(velocity, mass, tracking...)`。
-    *   **Function 内部**：让 `attack_enemy` 函数去自动读取当前飞船的速度、质量等数据，不需要 AI 传参。
 
 ---
 
