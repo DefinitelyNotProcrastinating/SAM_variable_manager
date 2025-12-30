@@ -10,7 +10,14 @@ import {
     sam_set_setting,
     sam_is_in_use,
     sam_summary,
-    sam_get_status
+    sam_get_status,
+    // NEWLY IMPORTED FUNCTIONS
+    sam_save_api_preset,
+    sam_delete_api_preset,
+    sam_get_all_api_presets,
+    sam_set_active_preset,
+    sam_export_all_settings,
+    sam_set_all_settings
 } from './backend.js';
 import './App.css';
 
@@ -28,7 +35,7 @@ const SAM_EVENTS = {
 };
 
 const SAM_FUNCTIONLIB_ID = "__SAM_IDENTIFIER__";
-const SCRIPT_VERSION = "5.2.0"; // Match backend version
+const SCRIPT_VERSION = "5.7.0"; // Match backend version
 
 // --- Helper Components ---
 
@@ -60,7 +67,8 @@ const InputRow = ({ label, type = "text", value, onChange, placeholder, disabled
 
 // --- Sub-Panels ---
 
-const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, disabled }) => {
+const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, disabled, onImport, onExport }) => {
+    const fileInputRef = useRef(null);
 
     const handleSettingChange = (key, val) => {
         if(disabled) return;
@@ -91,60 +99,54 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
         }
     };
 
+    const handleFileImportClick = () => {
+        fileInputRef.current.click();
+    };
+
+    const handleFileSelected = (event) => {
+        const file = event.target.files[0];
+        if (file) {
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                try {
+                    const content = JSON.parse(e.target.result);
+                    onImport(content);
+                } catch (err) {
+                    toastr.error("Failed to parse JSON file.");
+                    console.error(err);
+                }
+            };
+            reader.readAsText(file);
+        }
+        // Reset file input value to allow re-selection of the same file
+        event.target.value = null;
+    };
+
     return (
         <div className="sam_panel_content">
             <h3 className="sam_section_title">Plugin Configuration</h3>
             <p className="sam_help_text">These settings apply globally to the extension.</p>
-            <ToggleSwitch
-                label="Enable SAM"
-                value={settings.enabled}
-                onChange={(v) => handleSettingChange('enabled', v)}
-                disabled={disabled}
-            />
-            <ToggleSwitch
-                label="Auto Checkpoint"
-                value={settings.enable_auto_checkpoint}
-                onChange={(v) => handleSettingChange('enable_auto_checkpoint', v)}
-                disabled={disabled}
-            />
-            <InputRow
-                label="Checkpoint Frequency"
-                type="number"
-                value={settings.auto_checkpoint_frequency}
-                onChange={(v) => handleSettingChange('auto_checkpoint_frequency', v)}
-                disabled={disabled || !settings.enable_auto_checkpoint}
-                tooltip="Save the current state every X messages if no summary has occurred."
-            />
-            <ToggleSwitch
-                label="Skip WI/AN during Summary"
-                value={settings.skipWIAN_When_summarizing}
-                onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)}
-                disabled={disabled}
-            />
+            <ToggleSwitch label="Enable SAM" value={settings.enabled} onChange={(v) => handleSettingChange('enabled', v)} disabled={disabled} />
+            <ToggleSwitch label="Auto Checkpoint" value={settings.enable_auto_checkpoint} onChange={(v) => handleSettingChange('enable_auto_checkpoint', v)} disabled={disabled} />
+            <InputRow label="Checkpoint Frequency" type="number" value={settings.auto_checkpoint_frequency} onChange={(v) => handleSettingChange('auto_checkpoint_frequency', v)} disabled={disabled || !settings.enable_auto_checkpoint} tooltip="Save the current state every X messages if no summary has occurred." />
+            <ToggleSwitch label="Skip WI/AN during Summary" value={settings.skipWIAN_When_summarizing} onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)} disabled={disabled} />
 
             <h3 className="sam_section_title">Data & State Configuration</h3>
             <p className="sam_help_text">These settings are saved to the current story state (SAM_data).</p>
-            <ToggleSwitch
-                label="Disable Data Type Mutation"
-                value={!!data.disable_dtype_mutation}
-                onChange={(v) => handleDataChange('disable_dtype_mutation', v)}
-                disabled={disabled}
-            />
-            <ToggleSwitch
-                label="Uniquely Identified Paths"
-                value={!!data.uniquely_identified}
-                onChange={(v) => handleDataChange('uniquely_identified', v)}
-                disabled={disabled}
-            />
+            <ToggleSwitch label="Disable Data Type Mutation" value={!!data.disable_dtype_mutation} onChange={(v) => handleDataChange('disable_dtype_mutation', v)} disabled={disabled} />
+            <ToggleSwitch label="Uniquely Identified Paths" value={!!data.uniquely_identified} onChange={(v) => handleDataChange('uniquely_identified', v)} disabled={disabled} />
 
             <div className="sam_actions" style={{ marginTop: '20px' }}>
-                <button
-                    onClick={handleSaveAll}
-                    className="sam_btn sam_btn_primary"
-                    disabled={disabled}
-                >
-                    Save All Settings
-                </button>
+                <button onClick={handleSaveAll} className="sam_btn sam_btn_primary" disabled={disabled}>Save All Settings</button>
+            </div>
+
+            {/* [NEW] Import/Export Section */}
+            <h3 className="sam_section_title" style={{marginTop: '30px'}}>Import / Export</h3>
+            <p className="sam_help_text">Save or load your extension settings. API connection presets are NOT included in exports for security.</p>
+            <div className="sam_actions">
+                <button onClick={onExport} className="sam_btn sam_btn_secondary" disabled={disabled}>Export Settings (JSON)</button>
+                <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".json" onChange={handleFileSelected} />
+                <button onClick={handleFileImportClick} className="sam_btn sam_btn_secondary" disabled={disabled}>Import Settings (JSON)</button>
             </div>
         </div>
     );
@@ -200,7 +202,6 @@ const FunctionEditor = ({ functions, setFunctions, onCommit, disabled }) => {
     );
 };
 
-// [NEW] Component to manage regex settings
 const RegexPanel = ({ regexes = [], setRegexes, onSave, disabled }) => {
     const [selectedIndex, setSelectedIndex] = useState(-1);
 
@@ -284,6 +285,96 @@ const RegexPanel = ({ regexes = [], setRegexes, onSave, disabled }) => {
     );
 };
 
+const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetActive, disabled }) => {
+    const [selectedIndex, setSelectedIndex] = useState(-1);
+    const [draft, setDraft] = useState(null);
+
+    const defaultPreset = {
+        name: "New Preset",
+        apiMode: 'custom',
+        tavernProfile: '',
+        apiConfig: { url: '', apiKey: '', password: '', model: '', useMainApi: false, max_tokens: 4096, temperature: 0.9, top_p: 0.9 }
+    };
+
+    useEffect(() => {
+        if (selectedIndex >= 0 && presets[selectedIndex]) {
+            setDraft(_.cloneDeep(presets[selectedIndex]));
+        } else {
+            setDraft(null);
+        }
+    }, [selectedIndex, presets]);
+
+    const handleAdd = async () => {
+        if (disabled) return;
+        const newName = `New Preset ${presets.length + 1}`;
+        const newPreset = { ...defaultPreset, name: newName };
+        await onSave(newPreset);
+        // The refresh logic will update the state, so we find the new index after refresh.
+        // For now, optimistically set it to the end.
+        setSelectedIndex(presets.length);
+    };
+
+    const handleDeleteClick = (index) => {
+        if (disabled) return;
+        const presetToDelete = presets[index];
+        if (!window.confirm(`Delete the preset "${presetToDelete.name}"?`)) return;
+        onDelete(presetToDelete.name);
+        setSelectedIndex(-1);
+    };
+
+    const handleSaveClick = () => {
+        if (disabled || !draft) return;
+        onSave(draft);
+    };
+
+    const updateDraft = (path, value) => {
+        setDraft(prev => _.set(_.cloneDeep(prev), path, value));
+    };
+
+    return (
+        <div className={`sam_panel_split ${disabled ? 'sam_disabled_area' : ''}`}>
+            <div className="sam_sidebar_list">
+                <div className="sam_list_header"><span>API Presets</span><button className="sam_btn_small" onClick={handleAdd} disabled={disabled}>+</button></div>
+                <ul>
+                    {presets.map((p, i) => (
+                        <li key={p.name + i} className={i === selectedIndex ? 'active' : ''} onClick={() => setSelectedIndex(i)}>
+                            <div className="sam_list_item_content">
+                                <span className="sam_list_item_name" title={p.name}>{p.name}{p.name === activePreset && ' (Active)'}</span>
+                                <div className="sam_list_item_controls">
+                                    <span className="sam_delete_icon" onClick={(e) => { e.stopPropagation(); handleDeleteClick(i); }}>×</span>
+                                </div>
+                            </div>
+                        </li>
+                    ))}
+                </ul>
+            </div>
+            <div className="sam_detail_view">
+                {draft ? (<div className="sam_scrollable_form">
+                    <InputRow label="Preset Name" value={draft.name} onChange={(v) => updateDraft('name', v)} disabled={disabled} />
+                    <div className="sam_form_row"><label className="sam_label">API Mode</label><select className="sam_select" value={draft.apiMode} onChange={(e) => updateDraft('apiMode', e.target.value)} disabled={disabled}><option value="custom">Custom Endpoint</option><option value="tavern">Tavern Connection Profile</option></select></div>
+                    {draft.apiMode === 'custom' && (<>
+                        <InputRow label="API URL" value={draft.apiConfig.url} onChange={(v) => updateDraft('apiConfig.url', v)} disabled={disabled} placeholder="e.g., https://api.openai.com/v1"/>
+                        <InputRow label="API Key" type="password" value={draft.apiConfig.apiKey} onChange={(v) => updateDraft('apiConfig.apiKey', v)} disabled={disabled} placeholder="Leave blank if not needed"/>
+                        <InputRow label="API Password" type="password" value={draft.apiConfig.password} onChange={(v) => updateDraft('apiConfig.password', v)} disabled={disabled} placeholder="Optional proxy password"/>
+                        <InputRow label="Model Name" value={draft.apiConfig.model} onChange={(v) => updateDraft('apiConfig.model', v)} disabled={disabled} placeholder="e.g., gpt-4-turbo-preview"/>
+                    </>)}
+                     {draft.apiMode === 'tavern' && (<>
+                        <InputRow label="Profile ID" value={draft.tavernProfile} onChange={(v) => updateDraft('tavernProfile', v)} disabled={disabled} placeholder="Enter the ID of a Connection Manager profile"/>
+                    </>)}
+                    <h4 className="sam_subsection_title">Generation Parameters</h4>
+                    <InputRow label="Max Tokens" type="number" value={draft.apiConfig.max_tokens} onChange={(v) => updateDraft('apiConfig.max_tokens', v)} disabled={disabled} />
+                    <InputRow label="Temperature" type="number" value={draft.apiConfig.temperature} onChange={(v) => updateDraft('apiConfig.temperature', v)} disabled={disabled} />
+                    <InputRow label="Top P" type="number" value={draft.apiConfig.top_p} onChange={(v) => updateDraft('apiConfig.top_p', v)} disabled={disabled} />
+                    <div className="sam_actions" style={{marginTop: '20px'}}>
+                        <button onClick={handleSaveClick} className="sam_btn sam_btn_primary" disabled={disabled}>Save Changes</button>
+                        <button onClick={() => onSetActive(draft.name)} className="sam_btn sam_btn_secondary" disabled={disabled || draft.name === activePreset}>Set as Active for Summary</button>
+                    </div>
+
+                </div>) : (<div className="sam_empty_state">Select a preset to edit or add a new one.</div>)}
+            </div>
+        </div>
+    );
+};
 
 const SummaryLevelPanel = ({ level, summaries, onEdit, onDelete, disabled }) => {
     return (
@@ -403,7 +494,7 @@ function App() {
             if (rawData) {
                 if (!showInterface || forceUpdate) {
                     setDraftSamData(rawData);
-                    const responseSummary = rawData.response_summary || { L1: [], L2: [], L3: [] };
+                    const responseSummary = rawData.responseSummary || { L1: [], L2: [], L3: [] };
                     setDraftSummaries(responseSummary);
                 }
             }
@@ -422,7 +513,7 @@ function App() {
         const onStatusResponse = (data) => {
             if (data && data.state) {
                 setSamStatusText(data.state);
-                setIsBusy(["AWAIT_GENERATION", "PROCESSING"].includes(data.state));
+                setIsBusy(["AWAIT_GENERATION", "PROCESSING", "GENERATING"].includes(data.state));
             }
         };
 
@@ -453,7 +544,7 @@ function App() {
     useEffect(() => {
         if (!showInterface) return;
         const interval = setInterval(() => {
-            if (sam_get_status() !== "IDLE") { eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS); }
+            eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS);
         }, 2500);
         return () => clearInterval(interval);
     }, [showInterface]);
@@ -471,7 +562,7 @@ function App() {
         if (!samDetected) { toastr.error("Locked: SAM Identifier missing."); return; }
         try {
             const cleanData = { ...draftSamData };
-            cleanData.response_summary = draftSummaries;
+            cleanData.responseSummary = draftSummaries;
             await sam_set_data(cleanData);
             toastr.success("Data committed to State.");
         } catch (e) { console.error(e); toastr.error("Error committing data: " + e.message); }
@@ -508,11 +599,11 @@ function App() {
         try {
             await sam_set_setting('summary_levels', draftSamSettings.summary_levels);
             await sam_set_setting('summary_prompt', draftSamSettings.summary_prompt);
+            await sam_set_setting('summary_prompt_L3', draftSamSettings.summary_prompt_L3);
             toastr.success("Summary settings saved.");
         } catch (e) { console.error(e); toastr.error("Error saving summary settings: " + e.message); }
     };
-    
-    // [NEW] Handler to save regex settings
+
     const handleSaveRegexSettings = async () => {
         if (!samDetected) return;
         try {
@@ -534,6 +625,74 @@ function App() {
     const handleJsonChange = (content) => {
         if (!samDetected) return;
         if (content.jsObject) { setDraftSamData(content.jsObject); }
+    };
+
+    const handleSaveApiPreset = async (presetData) => {
+        if (!samDetected) return;
+        try {
+            await sam_save_api_preset(presetData.name, presetData);
+            toastr.success(`Preset "${presetData.name}" saved.`);
+            refreshData(true);
+        } catch (e) {
+            console.error(e);
+            toastr.error("Error saving preset: " + e.message);
+        }
+    };
+
+    const handleDeleteApiPreset = async (presetName) => {
+        if (!samDetected) return;
+        try {
+            await sam_delete_api_preset(presetName);
+            toastr.info(`Preset "${presetName}" deleted.`);
+            if (draftSamSettings.summary_api_preset === presetName) {
+                await sam_set_active_preset(null);
+            }
+            refreshData(true);
+        } catch (e) {
+            console.error(e);
+            toastr.error("Error deleting preset: " + e.message);
+        }
+    };
+
+    const handleSetActivePreset = async (presetName) => {
+        if (!samDetected) return;
+        try {
+            await sam_set_active_preset(presetName);
+            toastr.success(`"${presetName}" is now the active preset for summaries.`);
+            refreshData(true);
+        } catch (e) {
+            console.error(e);
+            toastr.error("Error setting active preset: " + e.message);
+        }
+    };
+
+    const handleExportSettings = async () => {
+        if (!samDetected) return;
+        try {
+            const settings = await sam_export_all_settings();
+            const jsonString = JSON.stringify(settings, null, 2);
+            const blob = new Blob([jsonString], { type: 'application/json' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = 'sam_settings_export.json';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            toastr.success("Settings exported.");
+        } catch (e) {
+            console.error(e);
+            toastr.error("Failed to export settings.");
+        }
+    };
+
+    const handleImportSettings = async (settingsObject) => {
+        if (!samDetected) return;
+        if (window.confirm("This will overwrite your current settings (except API presets). Are you sure?")) {
+            await sam_set_all_settings(settingsObject);
+            refreshData(true);
+        }
     };
 
     // --- Render ---
@@ -559,7 +718,7 @@ function App() {
                     {!samDetected && (<div className="sam_banner_error">SAM Identifier ({SAM_FUNCTIONLIB_ID}) not detected. Functionality is locked.</div>)}
                     <div className="sam_tabs">
                         <button className={`sam_tab ${activeTab === 'SUMMARY' ? 'active' : ''}`} onClick={() => setActiveTab('SUMMARY')}>Summary</button>
-                        {/* [NEW] Regex Tab */}
+                        <button className={`sam_tab ${activeTab === 'CONNECTIONS' ? 'active' : ''}`} onClick={() => setActiveTab('CONNECTIONS')}>Connections</button>
                         <button className={`sam_tab ${activeTab === 'REGEX' ? 'active' : ''}`} onClick={() => setActiveTab('REGEX')}>Regex</button>
                         <button className={`sam_tab ${activeTab === 'DATA' ? 'active' : ''}`} onClick={() => setActiveTab('DATA')}>Data</button>
                         <button className={`sam_tab ${activeTab === 'FUNCS' ? 'active' : ''}`} onClick={() => setActiveTab('FUNCS')}>Functions</button>
@@ -579,24 +738,24 @@ function App() {
                             <div className="sam_panel_content full_height layout_column">
                                 <div className="sam_summary_settings_section">
                                     <h3 className="sam_section_title">Hierarchical Summary Configuration</h3>
-                                    
-                                    {/* [UPDATED] Progress Display */}
+
                                     <div className="sam_form_row" style={{ padding: '0 0 10px 0', borderBottom: '1px solid #444', marginBottom: '15px' }}>
                                         <label className="sam_label" style={{ width: 'auto', marginRight: '10px' }}>Current Progress (Last Summarized Index):</label>
                                         <span style={{ fontFamily: 'monospace', fontSize: '1.1em', fontWeight: 'bold' }}>
                                             {draftSamData.summary_progress || 0}
                                         </span>
                                     </div>
-                                    {/* End Progress Display */}
 
                                     <div className="sam_form_grid_3">
-                                        <InputRow label="L1 Frequency" type="number" value={draftSamSettings.summary_levels?.L1?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.frequency', v))} tooltip="Create L1 every X messages." disabled={!samDetected} />
-                                        <InputRow label="L2 Frequency" type="number" value={draftSamSettings.summary_levels?.L2?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.frequency', v))} tooltip="Create L2 from every X L1s." disabled={!samDetected} />
-                                        <InputRow label="L3 Frequency" type="number" value={draftSamSettings.summary_levels?.L3?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.frequency', v))} tooltip="Create L3 from every X L2s." disabled={!samDetected} />
+                                        <InputRow label="L1 Freq" type="number" value={draftSamSettings.summary_levels?.L1?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.frequency', v))} disabled={!samDetected} />
+                                        <InputRow label="L2 Freq" type="number" value={draftSamSettings.summary_levels?.L2?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.frequency', v))} disabled={!samDetected} />
+                                        <InputRow label="L3 Freq" type="number" value={draftSamSettings.summary_levels?.L3?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.frequency', v))} disabled={!samDetected} />
                                     </div>
-                                    <ToggleSwitch label="Enable L1 Summaries" value={draftSamSettings.summary_levels?.L1?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.enabled', v))} disabled={!samDetected} />
-                                    <p className="sam_help_text">If disabled, raw chat is stored as L1 nodes instead of being summarized.</p>
-                                    <div className={`sam_form_column ${!samDetected ? 'sam_disabled' : ''}`}><label className="sam_label">L1 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))} disabled={!samDetected} /></div>
+                                    <ToggleSwitch label="Enable L2 Summaries" value={draftSamSettings.summary_levels?.L2?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.enabled', v))} disabled={!samDetected} />
+                                    <ToggleSwitch label="Enable L3 Summaries" value={draftSamSettings.summary_levels?.L3?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.enabled', v))} disabled={!samDetected} />
+
+                                    <div className={`sam_form_column ${!samDetected ? 'sam_disabled' : ''}`}><label className="sam_label">L2 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))} disabled={!samDetected} /></div>
+                                    <div className={`sam_form_column ${!samDetected ? 'sam_disabled' : ''}`}><label className="sam_label">L3 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt_L3 || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt_L3: e.target.value}))} disabled={!samDetected} /></div>
                                     <div className="sam_actions"><button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary" disabled={!samDetected}>Save Config</button><button onClick={handleTriggerSummary} className="sam_btn sam_btn_secondary" disabled={isBusy || !samDetected}>Run Summarization Now</button></div>
                                 </div>
                                 <hr className="sam_divider" />
@@ -608,7 +767,6 @@ function App() {
                                 <div className="sam_actions" style={{marginTop:'auto', paddingTop: '10px'}}><button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy || !samDetected}>Save All Edited Summaries</button></div>
                             </div>
                         )}
-                         {/* [NEW] Render Regex Panel */}
                         {activeTab === 'REGEX' && (
                             <RegexPanel
                                 regexes={draftSamSettings.regexes || []}
@@ -617,8 +775,29 @@ function App() {
                                 disabled={!samDetected}
                             />
                         )}
+                        {activeTab === 'CONNECTIONS' && (
+                            <ConnectionsPanel
+                                presets={draftSamSettings.api_presets || []}
+                                activePreset={draftSamSettings.summary_api_preset}
+                                onSave={handleSaveApiPreset}
+                                onDelete={handleDeleteApiPreset}
+                                onSetActive={handleSetActivePreset}
+                                disabled={!samDetected}
+                            />
+                        )}
                         {activeTab === 'FUNCS' && (<FunctionEditor functions={draftFunctions} setFunctions={setDraftFunctions} onCommit={handleCommitFunctions} disabled={!samDetected} />)}
-                        {activeTab === 'SETTINGS' && (<SettingsPanel settings={draftSamSettings} setSettings={setDraftSamSettings} data={draftSamData} setData={setDraftSamData} onCommitData={handleCommitData} disabled={!samDetected} />)}
+                        {activeTab === 'SETTINGS' && (
+                             <SettingsPanel
+                                settings={draftSamSettings}
+                                setSettings={setDraftSamSettings}
+                                data={draftSamData}
+                                setData={setDraftSamData}
+                                onCommitData={handleCommitData}
+                                disabled={!samDetected}
+                                onExport={handleExportSettings}
+                                onImport={handleImportSettings}
+                             />
+                        )}
                     </div>
                     <div className="sam_modal_footer">
                         <div className="sam_status_bar">Status: {samDetected ? (draftSamSettings.enabled ? "Active" : "Disabled") : "MISSING ID"} | Core State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
