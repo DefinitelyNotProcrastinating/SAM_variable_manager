@@ -441,7 +441,7 @@
                 // then use user prompt to produce the final response?
 
 
-                resultL2 = await apiManager.generate([{ role: 'user', content: promptL2 }], null, presetName);
+                resultL2 = await apiManager.generate([{ role: 'user', content: promptL2 }], presetName, null);
             } catch (e) {
                 logger.error("L2 Summarization with APIManager failed:", e);
                 toastr.error(`SAM L2 Summary Failed: ${e.message}`);
@@ -478,7 +478,7 @@
 
                 let resultL3;
                 try {
-                    resultL3 = await apiManager.generate([{ role: 'user', content: promptL3 }], null, presetName);
+                    resultL3 = await apiManager.generate([{ role: 'user', content: promptL3 }], presetName, null);
                 } catch (e) {
                     logger.error("L3 Summarization failed:", e);
                     toastr.error(`SAM L3 Summary Failed: ${e.message}`);

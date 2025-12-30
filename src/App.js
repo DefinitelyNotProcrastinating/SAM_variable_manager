@@ -37,6 +37,27 @@ const SAM_EVENTS = {
 const SAM_FUNCTIONLIB_ID = "__SAM_IDENTIFIER__";
 const SCRIPT_VERSION = "5.7.0"; // Match backend version
 
+// --- Constants for API Sources ---
+// Matches APIManager.js and SillyTavern's constants.js
+const API_SOURCE_OPTIONS = [
+    { value: 'custom', label: 'Custom / OpenAI Compatible' },
+    { value: 'makersuite', label: 'Google Makersuite (Gemini)' },
+    { value: 'claude', label: 'Anthropic Claude' },
+    { value: 'mistralai', label: 'Mistral AI' },
+    { value: 'openrouter', label: 'OpenRouter' },
+    { value: 'cohere', label: 'Cohere' },
+    { value: 'perplexity', label: 'Perplexity' },
+    { value: 'groq', label: 'Groq' },
+    { value: 'deepseek', label: 'DeepSeek' },
+    { value: '01ai', label: '01.AI' },
+    { value: 'nanogpt', label: 'NanoGPT' },
+    { value: 'aimlapi', label: 'AI/ML API' },
+    { value: 'xai', label: 'xAI (Grok)' },
+    { value: 'pollinations', label: 'Pollinations' },
+    { value: 'vertexai', label: 'Google Vertex AI' },
+    { value: 'ai21', label: 'AI21' },
+];
+
 // --- Helper Components ---
 
 const ToggleSwitch = ({ label, value, onChange, disabled }) => (
@@ -289,16 +310,38 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
     const [selectedIndex, setSelectedIndex] = useState(-1);
     const [draft, setDraft] = useState(null);
 
+    // [MODIFIED] Added proxyPassword to the default preset
     const defaultPreset = {
         name: "New Preset",
-        apiMode: 'custom',
-        tavernProfile: '',
-        apiConfig: { url: '', apiKey: '', password: '', model: '', useMainApi: false, max_tokens: 4096, temperature: 0.9, top_p: 0.9 }
+        apiMode: 'custom', // 'custom' or 'tavern'
+        apiConfig: {
+            source: 'custom', // Default format/source
+            url: '',
+            apiKey: '',
+            proxyPassword: '', // ADDED
+            model: '',
+            max_tokens: 4096,
+            temperature: 0.9,
+            top_p: 0.9
+        }
     };
 
     useEffect(() => {
         if (selectedIndex >= 0 && presets[selectedIndex]) {
-            setDraft(_.cloneDeep(presets[selectedIndex]));
+            // Ensure draft has a valid apiMode, default to 'custom' if missing.
+            const presetData = _.cloneDeep(presets[selectedIndex]);
+            if (!presetData.apiMode) {
+                presetData.apiMode = 'custom';
+            }
+            // Ensure apiConfig exists
+            if (!presetData.apiConfig) {
+                presetData.apiConfig = { ...defaultPreset.apiConfig };
+            }
+            // Ensure source is set
+            if (!presetData.apiConfig.source) {
+                presetData.apiConfig.source = 'custom';
+            }
+            setDraft(presetData);
         } else {
             setDraft(null);
         }
@@ -307,10 +350,8 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
     const handleAdd = async () => {
         if (disabled) return;
         const newName = `New Preset ${presets.length + 1}`;
-        const newPreset = { ...defaultPreset, name: newName };
+        const newPreset = { ...defaultPreset, name: newName, apiConfig: {...defaultPreset.apiConfig} };
         await onSave(newPreset);
-        // The refresh logic will update the state, so we find the new index after refresh.
-        // For now, optimistically set it to the end.
         setSelectedIndex(presets.length);
     };
 
@@ -351,20 +392,91 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
             <div className="sam_detail_view">
                 {draft ? (<div className="sam_scrollable_form">
                     <InputRow label="Preset Name" value={draft.name} onChange={(v) => updateDraft('name', v)} disabled={disabled} />
-                    <div className="sam_form_row"><label className="sam_label">API Mode</label><select className="sam_select" value={draft.apiMode} onChange={(e) => updateDraft('apiMode', e.target.value)} disabled={disabled}><option value="custom">Custom Endpoint</option><option value="tavern">Tavern Connection Profile</option></select></div>
-                    {draft.apiMode === 'custom' && (<>
-                        <InputRow label="API URL" value={draft.apiConfig.url} onChange={(v) => updateDraft('apiConfig.url', v)} disabled={disabled} placeholder="e.g., https://api.openai.com/v1"/>
-                        <InputRow label="API Key" type="password" value={draft.apiConfig.apiKey} onChange={(v) => updateDraft('apiConfig.apiKey', v)} disabled={disabled} placeholder="Leave blank if not needed"/>
-                        <InputRow label="API Password" type="password" value={draft.apiConfig.password} onChange={(v) => updateDraft('apiConfig.password', v)} disabled={disabled} placeholder="Optional proxy password"/>
-                        <InputRow label="Model Name" value={draft.apiConfig.model} onChange={(v) => updateDraft('apiConfig.model', v)} disabled={disabled} placeholder="e.g., gpt-4-turbo-preview"/>
-                    </>)}
-                     {draft.apiMode === 'tavern' && (<>
-                        <InputRow label="Profile ID" value={draft.tavernProfile} onChange={(v) => updateDraft('tavernProfile', v)} disabled={disabled} placeholder="Enter the ID of a Connection Manager profile"/>
-                    </>)}
-                    <h4 className="sam_subsection_title">Generation Parameters</h4>
+                    
+                    <div className="sam_form_row">
+                        <label className="sam_label">API Mode</label>
+                        <select 
+                            className="sam_select" 
+                            value={draft.apiMode || 'custom'} 
+                            onChange={(e) => updateDraft('apiMode', e.target.value)} 
+                            disabled={disabled}
+                        >
+                            <option value="custom">Custom Connection</option>
+                            <option value="tavern">Tavern Main API</option>
+                        </select>
+                    </div>
+
+                    {draft.apiMode === 'custom' ? (
+                    <>
+                        <p className="sam_help_text_small" style={{marginBottom:'10px'}}>
+                            Use this mode to connect to a specific endpoint independent of SillyTavern's main settings.
+                        </p>
+                        
+                        <div className="sam_form_row">
+                            <label className="sam_label">API Type / Source</label>
+                            <select
+                                className="sam_select"
+                                value={draft.apiConfig.source || 'custom'}
+                                onChange={(e) => updateDraft('apiConfig.source', e.target.value)}
+                                disabled={disabled}
+                            >
+                                {API_SOURCE_OPTIONS.map(opt => (
+                                    <option key={opt.value} value={opt.value}>{opt.label}</option>
+                                ))}
+                            </select>
+                        </div>
+                        <p className="sam_help_text_small">
+                            Determines how the request body is formatted for the proxy (e.g., Gemini vs OpenAI).
+                        </p>
+
+                        <InputRow 
+                            label="API URL" 
+                            value={draft.apiConfig.url} 
+                            onChange={(v) => updateDraft('apiConfig.url', v)} 
+                            disabled={disabled} 
+                            placeholder="e.g., http://127.0.0.1:5000/v1"
+                        />
+                        <InputRow 
+                            label="API Key" 
+                            type="password" 
+                            value={draft.apiConfig.apiKey} 
+                            onChange={(v) => updateDraft('apiConfig.apiKey', v)} 
+                            disabled={disabled} 
+                            placeholder="Optional"
+                        />
+                        {/* [MODIFIED] ADDED PROXY PASSWORD INPUT */}
+                        <InputRow
+                            label="Proxy Password"
+                            type="password"
+                            value={draft.apiConfig.proxyPassword || ''}
+                            onChange={(v) => updateDraft('apiConfig.proxyPassword', v)}
+                            disabled={disabled}
+                            placeholder="Optional, for authenticating with proxy"
+                        />
+                        <InputRow 
+                            label="Model Name" 
+                            value={draft.apiConfig.model} 
+                            onChange={(v) => updateDraft('apiConfig.model', v)} 
+                            disabled={disabled} 
+                            placeholder="e.g., gpt-4-turbo, gemini-pro, claude-3-opus"
+                        />
+                    </>
+                    ) : (
+                    <>
+                        <p className="sam_help_text_small" style={{marginTop:'10px', color: '#888'}}>
+                            This preset uses whichever API is currently selected and active in SillyTavern's main "AI Response Configuration" panel.
+                            <br/><br/>
+                            No additional configuration is required here.
+                        </p>
+                    </>
+                    )}
+
+                    <h4 className="sam_subsection_title" style={{marginTop: '20px'}}>Generation Parameters</h4>
+                    <p className="sam_help_text_small">These parameters will be sent if the endpoint supports them.</p>
                     <InputRow label="Max Tokens" type="number" value={draft.apiConfig.max_tokens} onChange={(v) => updateDraft('apiConfig.max_tokens', v)} disabled={disabled} />
                     <InputRow label="Temperature" type="number" value={draft.apiConfig.temperature} onChange={(v) => updateDraft('apiConfig.temperature', v)} disabled={disabled} />
                     <InputRow label="Top P" type="number" value={draft.apiConfig.top_p} onChange={(v) => updateDraft('apiConfig.top_p', v)} disabled={disabled} />
+                    
                     <div className="sam_actions" style={{marginTop: '20px'}}>
                         <button onClick={handleSaveClick} className="sam_btn sam_btn_primary" disabled={disabled}>Save Changes</button>
                         <button onClick={() => onSetActive(draft.name)} className="sam_btn sam_btn_secondary" disabled={disabled || draft.name === activePreset}>Set as Active for Summary</button>
