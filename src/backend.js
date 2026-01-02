@@ -25,7 +25,7 @@
 
     // Core Settings
     const DEFAULT_SETTINGS = {
-        enabled: true,
+        data_enable: true, // MODIFIED: Renamed from 'enabled'
         enable_auto_checkpoint: true,
         auto_checkpoint_frequency: 20,
         summary_api_preset: null,
@@ -142,7 +142,8 @@
             await checkWorldInfoActivation();
             const settings = loadSamSettings();
 
-            if (!go_flag || !settings.enabled) {
+            // MODIFIED: Check against 'data_enable' instead of 'enabled'
+            if (!go_flag || !settings.data_enable) {
                 sam_fsm_state = SAM_STATES.IDLE;
                 return;
             }
@@ -262,9 +263,11 @@
     // ============================================================================
     // == API
     // ============================================================================
+    
+    // MODIFIED: The extension is always considered "in use" for settings management.
+    // Data/summary functions are controlled by the identifier and 'data_enable' setting.
     async function sam_is_in_use() {
-        const settings = loadSamSettings();
-        return !!settings.enabled;
+        return true;
     }
 
     function sam_get_status() {
@@ -274,6 +277,14 @@
     async function sam_get_data() { return await getVariables(); }
 
     async function sam_set_data(newData) {
+        // ADDED: Guard to prevent data modification if identifier is missing.
+        await checkWorldInfoActivation();
+        if (!go_flag) {
+            toastr.error("SAM API: Cannot set data. Identifier is missing from World Info.");
+            logger.error("[External API] sam_set_data failed: SAM Identifier not found.");
+            return;
+        }
+
         if (typeof newData !== 'object' || newData === null) {
             toastr.error("SAM API: sam_set_data requires a valid object.");
             return;
@@ -305,8 +316,17 @@
 
     async function sam_summary() {
         logger.info("[SAM utils] Manual FORCE summary trigger");
-        const chat = SillyTavern.getContext().chat;
+
+        // ADDED: Guard to prevent manual summary if disabled or identifier is missing.
         const settings = loadSamSettings();
+        await checkWorldInfoActivation(); 
+        if (!go_flag || !settings.data_enable) {
+            logger.warn("Manual summary trigger blocked: SAM Identifier not found or data/summary functions are disabled.");
+            toastr.warning("Cannot run summary: Identifier missing or function is disabled in settings.");
+            return;
+        }
+
+        const chat = SillyTavern.getContext().chat;
         const period = settings.summary_levels.L2.frequency;
         const current_msg_count = chat.length;
         const startIndex = Math.max(0, current_msg_count - period);

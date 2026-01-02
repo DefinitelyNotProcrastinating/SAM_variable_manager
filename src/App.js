@@ -106,7 +106,8 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
         if (disabled) return;
         try {
             // Save general plugin settings
-            await sam_set_setting('enabled', settings.enabled);
+            // MODIFIED: Save 'data_enable' instead of 'enabled'
+            await sam_set_setting('data_enable', settings.data_enable);
             await sam_set_setting('enable_auto_checkpoint', settings.enable_auto_checkpoint);
             await sam_set_setting('auto_checkpoint_frequency', settings.auto_checkpoint_frequency);
             await sam_set_setting('skipWIAN_When_summarizing', settings.skipWIAN_When_summarizing);
@@ -152,7 +153,8 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
         <div className="sam_panel_content">
             <h3 className="sam_section_title">Plugin Configuration</h3>
             <p className="sam_help_text">These settings apply globally to the extension.</p>
-            <ToggleSwitch label="Enable SAM" value={settings.enabled} onChange={(v) => handleSettingChange('enabled', v)} disabled={disabled} />
+            {/* MODIFIED: Changed label, value, and onChange handler for the main toggle */}
+            <ToggleSwitch label="Enable Data/Summary Functions" value={settings.data_enable} onChange={(v) => handleSettingChange('data_enable', v)} disabled={disabled} />
             <ToggleSwitch label="Auto Checkpoint" value={settings.enable_auto_checkpoint} onChange={(v) => handleSettingChange('enable_auto_checkpoint', v)} disabled={disabled} />
             <InputRow label="Checkpoint Frequency" type="number" value={settings.auto_checkpoint_frequency} onChange={(v) => handleSettingChange('auto_checkpoint_frequency', v)} disabled={disabled || !settings.enable_auto_checkpoint} tooltip="Save the current state every X messages if no summary has occurred." />
             <ToggleSwitch label="Skip WI/AN during Summary" value={settings.skipWIAN_When_summarizing} onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)} disabled={disabled} />
@@ -596,10 +598,8 @@ function App() {
     // --- Data Loading & refreshing ---
 
     const refreshData = useCallback(async (forceUpdate = false) => {
-        if (! await sam_is_in_use()) {
-            setSamDetected(false);
-            return;
-        }
+        // MODIFIED: No longer checks sam_is_in_use() here, as the UI should always be available.
+        // The function was changed in the backend to always return true anyway.
         try {
             const exists = await checkSamExistence();
             setSamDetected(exists);
@@ -910,7 +910,8 @@ function App() {
                         )}
                     </div>
                     <div className="sam_modal_footer">
-                        <div className="sam_status_bar">Status: {samDetected ? (draftSamSettings.enabled ? "Active" : "Disabled") : "MISSING ID"} | Core State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
+                        {/* MODIFIED: Updated status text to be more descriptive */}
+                        <div className="sam_status_bar">Status: {samDetected ? (draftSamSettings.data_enable ? "Data Active" : "Data Disabled") : "MISSING ID"} | Core State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
                         <div className="sam_actions"><button onClick={handleManualRefresh} className="sam_btn sam_btn_secondary">Refresh UI</button><button onClick={() => setShowInterface(false)} className="sam_btn sam_btn_secondary">Close</button></div>
                     </div>
                 </div>
