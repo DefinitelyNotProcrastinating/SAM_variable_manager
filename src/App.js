@@ -688,7 +688,6 @@ function App() {
     };
 
     const handleSummaryContentChange = (level, index, newContent) => {
-        if (!samDetected) return;
         setDraftSummaries(prev => {
             const newSummaries = [...(prev[level] || [])];
             newSummaries[index] = { ...newSummaries[index], content: newContent };
@@ -697,7 +696,6 @@ function App() {
     };
 
     const handleSummaryDelete = (level, index) => {
-        if (!samDetected) return;
         if (!window.confirm(`Are you sure you want to delete this ${level} summary?`)) return;
         setDraftSummaries(prev => {
             const newSummaries = [...(prev[level] || [])];
@@ -707,7 +705,6 @@ function App() {
     };
 
     const handleSaveSummarySettings = async () => {
-        if (!samDetected) return;
         try {
             await sam_set_setting('summary_levels', draftSamSettings.summary_levels);
             await sam_set_setting('summary_prompt', draftSamSettings.summary_prompt);
@@ -717,7 +714,6 @@ function App() {
     };
 
     const handleSaveRegexSettings = async () => {
-        if (!samDetected) return;
         try {
             await sam_set_setting('regexes', draftSamSettings.regexes);
             toastr.success("Regex settings saved.");
@@ -740,7 +736,6 @@ function App() {
     };
 
     const handleSaveApiPreset = async (presetData) => {
-        if (!samDetected) return;
         try {
             await sam_save_api_preset(presetData.name, presetData);
             toastr.success(`Preset "${presetData.name}" saved.`);
@@ -752,7 +747,6 @@ function App() {
     };
 
     const handleDeleteApiPreset = async (presetName) => {
-        if (!samDetected) return;
         try {
             await sam_delete_api_preset(presetName);
             toastr.info(`Preset "${presetName}" deleted.`);
@@ -767,7 +761,6 @@ function App() {
     };
 
     const handleSetActivePreset = async (presetName) => {
-        if (!samDetected) return;
         try {
             await sam_set_active_preset(presetName);
             toastr.success(`"${presetName}" is now the active preset for summaries.`);
@@ -779,7 +772,6 @@ function App() {
     };
 
     const handleExportSettings = async () => {
-        if (!samDetected) return;
         try {
             const settings = await sam_export_all_settings();
             const jsonString = JSON.stringify(settings, null, 2);
