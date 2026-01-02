@@ -2,7 +2,7 @@ import React, { useState, useEffect, useCallback, useRef } from 'react';
 import ReactDOM from 'react-dom';
 import Draggable from 'react-draggable';
 import JSONEditor from 'react-json-editor-ajrm';
-import locale from 'react-json-editor-ajrm/locale/en';
+import locale from 'react-json-editor-ajrm/locale/en'; // 注意：JSON编辑器本身的地域化可能需要额外处理，这里保持'en'以确保功能正常
 import backend, {
     sam_get_data,
     sam_set_data,
@@ -12,7 +12,7 @@ import backend, {
     sam_summary,
     sam_get_status,
     checkWorldInfoActivation,
-    // NEWLY IMPORTED FUNCTIONS
+    // 新导入的函数
     sam_save_api_preset,
     sam_delete_api_preset,
     sam_get_all_api_presets,
@@ -22,7 +22,7 @@ import backend, {
 } from './backend.js';
 import './App.css';
 
-// Access SillyTavern Context and Global Helper
+// 访问 SillyTavern 上下文和全局帮助程序
 var { eventSource, eventTypes } = SillyTavern.getContext();
 var _ = require('lodash');
 
@@ -36,12 +36,12 @@ const SAM_EVENTS = {
 };
 
 const SAM_FUNCTIONLIB_ID = "__SAM_IDENTIFIER__";
-const SCRIPT_VERSION = "5.7.0"; // Match backend version
+const SCRIPT_VERSION = "5.7.0"; // 匹配后端版本
 
-// --- Constants for API Sources ---
-// Matches APIManager.js and SillyTavern's constants.js
+// --- API源常量 ---
+// 与 APIManager.js 和 SillyTavern 的 constants.js 匹配
 const API_SOURCE_OPTIONS = [
-    { value: 'custom', label: 'Custom / OpenAI Compatible' },
+    { value: 'custom', label: '自定义 / OpenAI 兼容' },
     { value: 'makersuite', label: 'Google Makersuite (Gemini)' },
     { value: 'claude', label: 'Anthropic Claude' },
     { value: 'mistralai', label: 'Mistral AI' },
@@ -59,7 +59,7 @@ const API_SOURCE_OPTIONS = [
     { value: 'ai21', label: 'AI21' },
 ];
 
-// --- Helper Components ---
+// --- 辅助组件 ---
 
 const ToggleSwitch = ({ label, value, onChange, disabled }) => (
     <div className={`sam_form_row ${disabled ? 'sam_disabled' : ''}`}>
@@ -87,7 +87,7 @@ const InputRow = ({ label, type = "text", value, onChange, placeholder, disabled
 );
 
 
-// --- Sub-Panels ---
+// --- 子面板 ---
 
 const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, disabled, onImport, onExport, dataLocked }) => {
     const fileInputRef = useRef(null);
@@ -105,24 +105,24 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
     const handleSaveAll = async () => {
         if (disabled) return;
         try {
-            // Save general plugin settings
-            // MODIFIED: Save 'data_enable' instead of 'enabled'
+            // 保存通用插件设置
+            // 已修改：保存 'data_enable' 而不是 'enabled'
             await sam_set_setting('data_enable', settings.data_enable);
             await sam_set_setting('enable_auto_checkpoint', settings.enable_auto_checkpoint);
             await sam_set_setting('auto_checkpoint_frequency', settings.auto_checkpoint_frequency);
             await sam_set_setting('skipWIAN_When_summarizing', settings.skipWIAN_When_summarizing);
 
-            // Save state-specific data only if it's not locked
+            // 仅在未锁定时保存特定于状态的数据
             if (!dataLocked) {
                 await onCommitData();
-                toastr.success("Settings and Data configuration saved successfully.");
+                toastr.success("设置和数据配置已成功保存。");
             } else {
-                toastr.success("Global settings saved. Data configuration is locked because SAM identifier is missing.");
+                toastr.success("全局设置已保存。由于缺少SAM标识符，数据配置被锁定。");
             }
 
         } catch (e) {
             console.error(e);
-            toastr.error("Error saving settings: " + e.message);
+            toastr.error("保存设置时出错: " + e.message);
         }
     };
 
@@ -139,42 +139,42 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
                     const content = JSON.parse(e.target.result);
                     onImport(content);
                 } catch (err) {
-                    toastr.error("Failed to parse JSON file.");
+                    toastr.error("解析JSON文件失败。");
                     console.error(err);
                 }
             };
             reader.readAsText(file);
         }
-        // Reset file input value to allow re-selection of the same file
+        // 重置文件输入值以允许重新选择相同的文件
         event.target.value = null;
     };
 
     return (
         <div className="sam_panel_content">
-            <h3 className="sam_section_title">Plugin Configuration</h3>
-            <p className="sam_help_text">These settings apply globally to the extension.</p>
-            {/* MODIFIED: Changed label, value, and onChange handler for the main toggle */}
-            <ToggleSwitch label="Enable Data/Summary Functions" value={settings.data_enable} onChange={(v) => handleSettingChange('data_enable', v)} disabled={disabled} />
-            <ToggleSwitch label="Auto Checkpoint" value={settings.enable_auto_checkpoint} onChange={(v) => handleSettingChange('enable_auto_checkpoint', v)} disabled={disabled} />
-            <InputRow label="Checkpoint Frequency" type="number" value={settings.auto_checkpoint_frequency} onChange={(v) => handleSettingChange('auto_checkpoint_frequency', v)} disabled={disabled || !settings.enable_auto_checkpoint} tooltip="Save the current state every X messages if no summary has occurred." />
-            <ToggleSwitch label="Skip WI/AN during Summary" value={settings.skipWIAN_When_summarizing} onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)} disabled={disabled} />
+            <h3 className="sam_section_title">插件配置</h3>
+            <p className="sam_help_text">这些设置对扩展全局生效。</p>
+            {/* 已修改：主开关的标签、值和onChange处理程序已更改 */}
+            <ToggleSwitch label="启用数据/摘要功能" value={settings.data_enable} onChange={(v) => handleSettingChange('data_enable', v)} disabled={disabled} />
+            <ToggleSwitch label="自动检查点" value={settings.enable_auto_checkpoint} onChange={(v) => handleSettingChange('enable_auto_checkpoint', v)} disabled={disabled} />
+            <InputRow label="检查点频率" type="number" value={settings.auto_checkpoint_frequency} onChange={(v) => handleSettingChange('auto_checkpoint_frequency', v)} disabled={disabled || !settings.enable_auto_checkpoint} tooltip="如果没有发生摘要，则每X条消息保存一次当前状态。" />
+            <ToggleSwitch label="摘要期间跳过世界信息/作者笔记" value={settings.skipWIAN_When_summarizing} onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)} disabled={disabled} />
 
-            <h3 className="sam_section_title">Data & State Configuration</h3>
-            <p className="sam_help_text">These settings are saved to the current story state (SAM_data). Access is locked if the SAM identifier is not detected.</p>
-            <ToggleSwitch label="Disable Data Type Mutation" value={!!data.disable_dtype_mutation} onChange={(v) => handleDataChange('disable_dtype_mutation', v)} disabled={disabled || dataLocked} />
-            <ToggleSwitch label="Uniquely Identified Paths" value={!!data.uniquely_identified} onChange={(v) => handleDataChange('uniquely_identified', v)} disabled={disabled || dataLocked} />
+            <h3 className="sam_section_title">数据与状态配置</h3>
+            <p className="sam_help_text">这些设置会保存到当前的故事状态(SAM_data)中。如果未检测到SAM标识符，则访问将被锁定。</p>
+            <ToggleSwitch label="禁用数据类型突变" value={!!data.disable_dtype_mutation} onChange={(v) => handleDataChange('disable_dtype_mutation', v)} disabled={disabled || dataLocked} />
+            <ToggleSwitch label="唯一标识路径" value={!!data.uniquely_identified} onChange={(v) => handleDataChange('uniquely_identified', v)} disabled={disabled || dataLocked} />
 
             <div className="sam_actions" style={{ marginTop: '20px' }}>
-                <button onClick={handleSaveAll} className="sam_btn sam_btn_primary" disabled={disabled}>Save All Settings</button>
+                <button onClick={handleSaveAll} className="sam_btn sam_btn_primary" disabled={disabled}>保存所有设置</button>
             </div>
 
-            {/* [NEW] Import/Export Section */}
-            <h3 className="sam_section_title" style={{marginTop: '30px'}}>Import / Export</h3>
-            <p className="sam_help_text">Save or load your extension settings. API connection presets are NOT included in exports for security.</p>
+            {/* [新增] 导入/导出部分 */}
+            <h3 className="sam_section_title" style={{marginTop: '30px'}}>导入 / 导出</h3>
+            <p className="sam_help_text">保存或加载您的扩展设置。为安全起见，API连接预设不包含在导出中。</p>
             <div className="sam_actions">
-                <button onClick={onExport} className="sam_btn sam_btn_secondary" disabled={disabled}>Export Settings (JSON)</button>
+                <button onClick={onExport} className="sam_btn sam_btn_secondary" disabled={disabled}>导出设置 (JSON)</button>
                 <input type="file" ref={fileInputRef} style={{ display: 'none' }} accept=".json" onChange={handleFileSelected} />
-                <button onClick={handleFileImportClick} className="sam_btn sam_btn_secondary" disabled={disabled}>Import Settings (JSON)</button>
+                <button onClick={handleFileImportClick} className="sam_btn sam_btn_secondary" disabled={disabled}>导入设置 (JSON)</button>
             </div>
         </div>
     );
@@ -185,14 +185,14 @@ const FunctionEditor = ({ functions, setFunctions, onCommit, disabled, commitDis
 
     const handleAdd = () => {
         if(disabled) return;
-        const newFunc = { func_name: "new_function", func_params: [], func_body: "// ...", timeout: 2000, periodic: false, network_access: false, order: "normal" };
+        const newFunc = { func_name: "新函数", func_params: [], func_body: "// ...", timeout: 2000, periodic: false, network_access: false, order: "normal" };
         setFunctions([...functions, newFunc]);
         setSelectedIndex(functions.length);
     };
 
     const handleDelete = (index) => {
         if(disabled) return;
-        if (!window.confirm("Delete this function?")) return;
+        if (!window.confirm("确定要删除此函数吗？")) return;
         const newFuncs = [...functions];
         newFuncs.splice(index, 1);
         setFunctions(newFuncs);
@@ -211,20 +211,20 @@ const FunctionEditor = ({ functions, setFunctions, onCommit, disabled, commitDis
     return (
         <div className={`sam_panel_split ${disabled ? 'sam_disabled_area' : ''}`}>
             <div className="sam_sidebar_list">
-                <div className="sam_list_header"><span>Functions (WI)</span><button className="sam_btn_small" onClick={handleAdd} disabled={disabled}>+</button></div>
+                <div className="sam_list_header"><span>函数 (世界信息)</span><button className="sam_btn_small" onClick={handleAdd} disabled={disabled}>+</button></div>
                 <ul>
                     {functions.map((f, i) => (<li key={i} className={i === selectedIndex ? 'active' : ''} onClick={() => setSelectedIndex(i)}>{f.func_name}<span className="sam_delete_icon" onClick={(e) => { e.stopPropagation(); if(!disabled) handleDelete(i); }}>×</span></li>))}
                 </ul>
-                <div style={{padding: '10px'}}><button className="sam_btn sam_btn_primary full_width" onClick={onCommit} disabled={disabled || commitDisabled}>Save to World Info</button></div>
+                <div style={{padding: '10px'}}><button className="sam_btn sam_btn_primary full_width" onClick={onCommit} disabled={disabled || commitDisabled}>保存到世界信息</button></div>
             </div>
             <div className="sam_detail_view">
                 {selectedFunc ? (<div className="sam_scrollable_form">
-                    <InputRow label="Function Name" value={selectedFunc.func_name} onChange={(v) => updateFunc(selectedIndex, 'func_name', v)} disabled={disabled} />
-                    <div className="sam_form_row"><label className="sam_label">Params (comma separated)</label><input className="sam_input" value={(selectedFunc.func_params || []).join(', ')} onChange={(e) => updateFunc(selectedIndex, 'func_params', e.target.value.split(',').map(s => s.trim()))} disabled={disabled} /></div>
-                    <div className="sam_form_column"><label className="sam_label">Function Body (JS)</label><textarea className="sam_code_editor" value={selectedFunc.func_body} onChange={(e) => updateFunc(selectedIndex, 'func_body', e.target.value)} disabled={disabled} /></div>
-                    <div className="sam_form_grid"><InputRow label="Timeout (ms)" type="number" value={selectedFunc.timeout} onChange={(v) => updateFunc(selectedIndex, 'timeout', v)} disabled={disabled} /><div className="sam_form_row"><label className="sam_label">Exec Order</label><select className="sam_select" value={selectedFunc.order || 'normal'} onChange={(e) => updateFunc(selectedIndex, 'order', e.target.value)} disabled={disabled}><option value="first">First</option><option value="normal">Normal</option><option value="last">Last</option></select></div></div>
-                    <div className="sam_form_grid"><ToggleSwitch label="Periodic Eval" value={selectedFunc.periodic} onChange={(v) => updateFunc(selectedIndex, 'periodic', v)} disabled={disabled} /><ToggleSwitch label="Network Access" value={selectedFunc.network_access} onChange={(v) => updateFunc(selectedIndex, 'network_access', v)} disabled={disabled} /></div>
-                </div>) : (<div className="sam_empty_state">Select a function to edit</div>)}
+                    <InputRow label="函数名称" value={selectedFunc.func_name} onChange={(v) => updateFunc(selectedIndex, 'func_name', v)} disabled={disabled} />
+                    <div className="sam_form_row"><label className="sam_label">参数 (逗号分隔)</label><input className="sam_input" value={(selectedFunc.func_params || []).join(', ')} onChange={(e) => updateFunc(selectedIndex, 'func_params', e.target.value.split(',').map(s => s.trim()))} disabled={disabled} /></div>
+                    <div className="sam_form_column"><label className="sam_label">函数体 (JS)</label><textarea className="sam_code_editor" value={selectedFunc.func_body} onChange={(e) => updateFunc(selectedIndex, 'func_body', e.target.value)} disabled={disabled} /></div>
+                    <div className="sam_form_grid"><InputRow label="超时 (毫秒)" type="number" value={selectedFunc.timeout} onChange={(v) => updateFunc(selectedIndex, 'timeout', v)} disabled={disabled} /><div className="sam_form_row"><label className="sam_label">执行顺序</label><select className="sam_select" value={selectedFunc.order || 'normal'} onChange={(e) => updateFunc(selectedIndex, 'order', e.target.value)} disabled={disabled}><option value="first">最先</option><option value="normal">正常</option><option value="last">最后</option></select></div></div>
+                    <div className="sam_form_grid"><ToggleSwitch label="周期性评估" value={selectedFunc.periodic} onChange={(v) => updateFunc(selectedIndex, 'periodic', v)} disabled={disabled} /><ToggleSwitch label="网络访问" value={selectedFunc.network_access} onChange={(v) => updateFunc(selectedIndex, 'network_access', v)} disabled={disabled} /></div>
+                </div>) : (<div className="sam_empty_state">选择一个函数进行编辑</div>)}
             </div>
         </div>
     );
@@ -235,14 +235,14 @@ const RegexPanel = ({ regexes = [], setRegexes, onSave, disabled }) => {
 
     const handleAdd = () => {
         if (disabled) return;
-        const newRegex = { name: "New Regex", enabled: true, regex_body: "" };
+        const newRegex = { name: "新正则表达式", enabled: true, regex_body: "" };
         setRegexes([...regexes, newRegex]);
         setSelectedIndex(regexes.length);
     };
 
     const handleDelete = (index) => {
         if (disabled) return;
-        if (!window.confirm("Delete this regex?")) return;
+        if (!window.confirm("确定要删除此正则表达式吗？")) return;
         const newArr = [...regexes];
         newArr.splice(index, 1);
         setRegexes(newArr);
@@ -257,7 +257,7 @@ const RegexPanel = ({ regexes = [], setRegexes, onSave, disabled }) => {
     };
 
     const toggleEnabled = (e, index) => {
-        e.stopPropagation(); // Prevent selection when toggling
+        e.stopPropagation(); // 防止在切换时选择
         if (disabled) return;
         const newArr = [...regexes];
         newArr[index] = { ...newArr[index], enabled: !newArr[index].enabled };
@@ -270,7 +270,7 @@ const RegexPanel = ({ regexes = [], setRegexes, onSave, disabled }) => {
         <div className={`sam_panel_split ${disabled ? 'sam_disabled_area' : ''}`}>
             <div className="sam_sidebar_list">
                 <div className="sam_list_header">
-                    <span>Regex Filters</span>
+                    <span>正则表达式过滤器</span>
                     <button className="sam_btn_small" onClick={handleAdd} disabled={disabled}>+</button>
                 </div>
                 <ul>
@@ -290,23 +290,23 @@ const RegexPanel = ({ regexes = [], setRegexes, onSave, disabled }) => {
                 </ul>
                 <div style={{ padding: '10px' }}>
                     <button className="sam_btn sam_btn_primary full_width" onClick={onSave} disabled={disabled}>
-                        Save All Regexes
+                        保存所有正则表达式
                     </button>
                 </div>
             </div>
             <div className="sam_detail_view">
                 {selectedRegex ? (
                     <div className="sam_scrollable_form">
-                        <InputRow label="Regex Name" value={selectedRegex.name} onChange={(v) => updateRegex(selectedIndex, 'name', v)} disabled={disabled} />
+                        <InputRow label="正则名称" value={selectedRegex.name} onChange={(v) => updateRegex(selectedIndex, 'name', v)} disabled={disabled} />
                         <div className={`sam_form_column ${disabled ? 'sam_disabled' : ''}`}>
-                            <label className="sam_label">Regex Body (no slashes or flags)</label>
+                            <label className="sam_label">正则表达式主体 (无斜杠或标志)</label>
                             <textarea className="sam_code_editor" value={selectedRegex.regex_body} onChange={(e) => updateRegex(selectedIndex, 'regex_body', e.target.value)} disabled={disabled} />
-                            <p className="sam_help_text_small">Example: `\n\*.*?\*` to remove italics. The 'g' (global) flag is added automatically.</p>
+                            <p className="sam_help_text_small">例如: `\n\*.*?\*` 用于移除斜体。'g' (全局) 标志会自动添加。</p>
                         </div>
-                        <ToggleSwitch label="Enabled" value={selectedRegex.enabled} onChange={(v) => updateRegex(selectedIndex, 'enabled', v)} disabled={disabled} />
+                        <ToggleSwitch label="已启用" value={selectedRegex.enabled} onChange={(v) => updateRegex(selectedIndex, 'enabled', v)} disabled={disabled} />
                     </div>
                 ) : (
-                    <div className="sam_empty_state">Select a regex to edit</div>
+                    <div className="sam_empty_state">选择一个正则表达式进行编辑</div>
                 )}
             </div>
         </div>
@@ -317,15 +317,15 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
     const [selectedIndex, setSelectedIndex] = useState(-1);
     const [draft, setDraft] = useState(null);
 
-    // [MODIFIED] Added proxyPassword to the default preset
+    // [已修改] 将 proxyPassword 添加到默认预设中
     const defaultPreset = {
-        name: "New Preset",
-        apiMode: 'custom', // 'custom' or 'tavern'
+        name: "新预设",
+        apiMode: 'custom', // 'custom' 或 'tavern'
         apiConfig: {
-            source: 'custom', // Default format/source
+            source: 'custom', // 默认格式/源
             url: '',
             apiKey: '',
-            proxyPassword: '', // ADDED
+            proxyPassword: '', // 已添加
             model: '',
             max_tokens: 4096,
             temperature: 0.9,
@@ -335,16 +335,16 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
 
     useEffect(() => {
         if (selectedIndex >= 0 && presets[selectedIndex]) {
-            // Ensure draft has a valid apiMode, default to 'custom' if missing.
+            // 确保草稿有一个有效的apiMode，如果缺少则默认为'custom'。
             const presetData = _.cloneDeep(presets[selectedIndex]);
             if (!presetData.apiMode) {
                 presetData.apiMode = 'custom';
             }
-            // Ensure apiConfig exists
+            // 确保apiConfig存在
             if (!presetData.apiConfig) {
                 presetData.apiConfig = { ...defaultPreset.apiConfig };
             }
-            // Ensure source is set
+            // 确保source已设置
             if (!presetData.apiConfig.source) {
                 presetData.apiConfig.source = 'custom';
             }
@@ -356,7 +356,7 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
 
     const handleAdd = async () => {
         if (disabled) return;
-        const newName = `New Preset ${presets.length + 1}`;
+        const newName = `新预设 ${presets.length + 1}`;
         const newPreset = { ...defaultPreset, name: newName, apiConfig: {...defaultPreset.apiConfig} };
         await onSave(newPreset);
         setSelectedIndex(presets.length);
@@ -365,7 +365,7 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
     const handleDeleteClick = (index) => {
         if (disabled) return;
         const presetToDelete = presets[index];
-        if (!window.confirm(`Delete the preset "${presetToDelete.name}"?`)) return;
+        if (!window.confirm(`确定要删除预设 "${presetToDelete.name}" 吗？`)) return;
         onDelete(presetToDelete.name);
         setSelectedIndex(-1);
     };
@@ -382,12 +382,12 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
     return (
         <div className={`sam_panel_split ${disabled ? 'sam_disabled_area' : ''}`}>
             <div className="sam_sidebar_list">
-                <div className="sam_list_header"><span>API Presets</span><button className="sam_btn_small" onClick={handleAdd} disabled={disabled}>+</button></div>
+                <div className="sam_list_header"><span>API 预设</span><button className="sam_btn_small" onClick={handleAdd} disabled={disabled}>+</button></div>
                 <ul>
                     {presets.map((p, i) => (
                         <li key={p.name + i} className={i === selectedIndex ? 'active' : ''} onClick={() => setSelectedIndex(i)}>
                             <div className="sam_list_item_content">
-                                <span className="sam_list_item_name" title={p.name}>{p.name}{p.name === activePreset && ' (Active)'}</span>
+                                <span className="sam_list_item_name" title={p.name}>{p.name}{p.name === activePreset && ' (当前)'}</span>
                                 <div className="sam_list_item_controls">
                                     <span className="sam_delete_icon" onClick={(e) => { e.stopPropagation(); handleDeleteClick(i); }}>×</span>
                                 </div>
@@ -398,29 +398,29 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
             </div>
             <div className="sam_detail_view">
                 {draft ? (<div className="sam_scrollable_form">
-                    <InputRow label="Preset Name" value={draft.name} onChange={(v) => updateDraft('name', v)} disabled={disabled} />
+                    <InputRow label="预设名称" value={draft.name} onChange={(v) => updateDraft('name', v)} disabled={disabled} />
                     
                     <div className="sam_form_row">
-                        <label className="sam_label">API Mode</label>
+                        <label className="sam_label">API 模式</label>
                         <select 
                             className="sam_select" 
                             value={draft.apiMode || 'custom'} 
                             onChange={(e) => updateDraft('apiMode', e.target.value)} 
                             disabled={disabled}
                         >
-                            <option value="custom">Custom Connection</option>
-                            <option value="tavern">Tavern Main API</option>
+                            <option value="custom">自定义连接</option>
+                            <option value="tavern">Tavern 主 API</option>
                         </select>
                     </div>
 
                     {draft.apiMode === 'custom' ? (
                     <>
                         <p className="sam_help_text_small" style={{marginBottom:'10px'}}>
-                            Use this mode to connect to a specific endpoint independent of SillyTavern's main settings.
+                            使用此模式可连接到独立于 SillyTavern 主设置的特定端点。
                         </p>
                         
                         <div className="sam_form_row">
-                            <label className="sam_label">API Type / Source</label>
+                            <label className="sam_label">API 类型 / 源</label>
                             <select
                                 className="sam_select"
                                 value={draft.apiConfig.source || 'custom'}
@@ -433,7 +433,7 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
                             </select>
                         </div>
                         <p className="sam_help_text_small">
-                            Determines how the request body is formatted for the proxy (e.g., Gemini vs OpenAI).
+                            决定请求体如何为代理格式化 (例如, Gemini vs OpenAI)。
                         </p>
 
                         <InputRow 
@@ -441,55 +441,55 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
                             value={draft.apiConfig.url} 
                             onChange={(v) => updateDraft('apiConfig.url', v)} 
                             disabled={disabled} 
-                            placeholder="e.g., http://127.0.0.1:5000/v1"
+                            placeholder="例如, http://127.0.0.1:5000/v1"
                         />
                         <InputRow 
-                            label="API Key" 
+                            label="API 密钥" 
                             type="password" 
                             value={draft.apiConfig.apiKey} 
                             onChange={(v) => updateDraft('apiConfig.apiKey', v)} 
                             disabled={disabled} 
-                            placeholder="Optional"
+                            placeholder="可选"
                         />
-                        {/* [MODIFIED] ADDED PROXY PASSWORD INPUT */}
+                        {/* [已修改] 添加了代理密码输入框 */}
                         <InputRow
-                            label="Proxy Password"
+                            label="代理密码"
                             type="password"
                             value={draft.apiConfig.proxyPassword || ''}
                             onChange={(v) => updateDraft('apiConfig.proxyPassword', v)}
                             disabled={disabled}
-                            placeholder="Optional, for authenticating with proxy"
+                            placeholder="可选，用于代理服务器身份验证"
                         />
                         <InputRow 
-                            label="Model Name" 
+                            label="模型名称" 
                             value={draft.apiConfig.model} 
                             onChange={(v) => updateDraft('apiConfig.model', v)} 
                             disabled={disabled} 
-                            placeholder="e.g., gpt-4-turbo, gemini-pro, claude-3-opus"
+                            placeholder="例如, gpt-4-turbo, gemini-pro, claude-3-opus"
                         />
                     </>
                     ) : (
                     <>
                         <p className="sam_help_text_small" style={{marginTop:'10px', color: '#888'}}>
-                            This preset uses whichever API is currently selected and active in SillyTavern's main "AI Response Configuration" panel.
+                            此预设将使用 SillyTavern 主“AI 响应配置”面板中当前选择并激活的任何 API。
                             <br/><br/>
-                            No additional configuration is required here.
+                            此处无需额外配置。
                         </p>
                     </>
                     )}
 
-                    <h4 className="sam_subsection_title" style={{marginTop: '20px'}}>Generation Parameters</h4>
-                    <p className="sam_help_text_small">These parameters will be sent if the endpoint supports them.</p>
-                    <InputRow label="Max Tokens" type="number" value={draft.apiConfig.max_tokens} onChange={(v) => updateDraft('apiConfig.max_tokens', v)} disabled={disabled} />
-                    <InputRow label="Temperature" type="number" value={draft.apiConfig.temperature} onChange={(v) => updateDraft('apiConfig.temperature', v)} disabled={disabled} />
+                    <h4 className="sam_subsection_title" style={{marginTop: '20px'}}>生成参数</h4>
+                    <p className="sam_help_text_small">如果端点支持，则会发送这些参数。</p>
+                    <InputRow label="最大令牌数" type="number" value={draft.apiConfig.max_tokens} onChange={(v) => updateDraft('apiConfig.max_tokens', v)} disabled={disabled} />
+                    <InputRow label="温度" type="number" value={draft.apiConfig.temperature} onChange={(v) => updateDraft('apiConfig.temperature', v)} disabled={disabled} />
                     <InputRow label="Top P" type="number" value={draft.apiConfig.top_p} onChange={(v) => updateDraft('apiConfig.top_p', v)} disabled={disabled} />
                     
                     <div className="sam_actions" style={{marginTop: '20px'}}>
-                        <button onClick={handleSaveClick} className="sam_btn sam_btn_primary" disabled={disabled}>Save Changes</button>
-                        <button onClick={() => onSetActive(draft.name)} className="sam_btn sam_btn_secondary" disabled={disabled || draft.name === activePreset}>Set as Active for Summary</button>
+                        <button onClick={handleSaveClick} className="sam_btn sam_btn_primary" disabled={disabled}>保存更改</button>
+                        <button onClick={() => onSetActive(draft.name)} className="sam_btn sam_btn_secondary" disabled={disabled || draft.name === activePreset}>设为摘要活动预设</button>
                     </div>
 
-                </div>) : (<div className="sam_empty_state">Select a preset to edit or add a new one.</div>)}
+                </div>) : (<div className="sam_empty_state">选择一个预设进行编辑或添加新预设。</div>)}
             </div>
         </div>
     );
@@ -498,20 +498,20 @@ const ConnectionsPanel = ({ presets = [], activePreset, onSave, onDelete, onSetA
 const SummaryLevelPanel = ({ level, summaries, onEdit, onDelete, disabled }) => {
     return (
         <div className="sam_summary_level_container">
-            <h4 className="sam_summary_level_title">{level} Summaries ({summaries.length})</h4>
+            <h4 className="sam_summary_level_title">{level} 级摘要 ({summaries.length})</h4>
             {summaries.length === 0 ? (
-                <p className="sam_empty_state_small">No {level} summaries yet.</p>
+                <p className="sam_empty_state_small">暂无 {level} 级摘要。</p>
             ) : (
                 <div className="sam_summary_list">
                     {summaries.map((summary, index) => (
                         <div key={index} className="sam_summary_item">
                             <div className="sam_summary_item_header">
-                                <span>Range: {summary.index_begin} - {summary.index_end}</span>
+                                <span>范围: {summary.index_begin} - {summary.index_end}</span>
                                 <button
                                     className="sam_delete_icon_small"
                                     onClick={() => onDelete(level, index)}
                                     disabled={disabled}
-                                    title="Delete this summary"
+                                    title="删除此摘要"
                                 >×</button>
                             </div>
                             <textarea
@@ -528,12 +528,12 @@ const SummaryLevelPanel = ({ level, summaries, onEdit, onDelete, disabled }) => 
     );
 };
 
-const ExtensionDrawer = ({ children, title = "SAM Extension", warning }) => {
+const ExtensionDrawer = ({ children, title = "SAM 扩展", warning }) => {
     const [isOpen, setIsOpen] = useState(false);
     return (<div className="inline-drawer"><div className="inline-drawer-toggle inline-drawer-header" onClick={() => setIsOpen(!isOpen)}><b>{title}</b>{warning && <span style={{marginLeft:'10px', color:'orange', fontSize:'0.8em'}}>⚠ {warning}</span>}<div className="inline-drawer-icon fa-solid fa-circle-chevron-down down" style={{ transform: isOpen ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 0.2s' }} /></div>{isOpen && (<div className="inline-drawer-content">{children}</div>)}</div>);
 };
 
-// --- Main App Component ---
+// --- 主应用组件 ---
 
 function App() {
     const [showInterface, setShowInterface] = useState(false);
@@ -547,7 +547,7 @@ function App() {
 
     const [isDataReady, setIsDataReady] = useState(false);
     const [isBusy, setIsBusy] = useState(false);
-    const [samStatusText, setSamStatusText] = useState("IDLE");
+    const [samStatusText, setSamStatusText] = useState("空闲");
 
     const [samDetected, setSamDetected] = useState(false);
 
@@ -555,7 +555,7 @@ function App() {
     const [extensionsContainer, setExtensionsContainer] = useState(null);
     const nodeRef = useRef(null);
 
-    // --- Helpers for World Info Functions & Identification ---
+    // --- 世界信息函数和识别的辅助函数 ---
 
     const checkSamExistence = async () => {
         try {
@@ -567,7 +567,7 @@ function App() {
             const wiData = await context.loadWorldInfo(worldInfoName);
             if (!wiData || !wiData.entries) return false;
             return !!_.find(wiData.entries, (entry) => entry.comment === SAM_FUNCTIONLIB_ID);
-        } catch (e) { console.error("Error checking for SAM ID", e); return false; }
+        } catch (e) { console.error("检查 SAM ID 时出错", e); return false; }
     };
 
     const getFunctionsFromWI = async () => {
@@ -584,22 +584,22 @@ function App() {
                 return JSON.parse(funcEntry.content);
             }
             return [];
-        } catch (e) { console.error("[SAM frontend] Error fetching functions from WI", e); return []; }
+        } catch (e) { console.error("[SAM 前端] 从世界信息获取函数时出错", e); return []; }
     };
 
     const saveFunctionsToWI = async (functions) => {
-        if (!samDetected) { toastr.error("Cannot save: SAM Identifier not detected in World Info."); return; }
-        // This function requires TavernHelper, which may not be available.
-        // For now, this is a placeholder for the user's specific implementation.
-        console.warn("saveFunctionsToWI is not fully implemented in this test build.");
-        toastr.info("Function saving is a placeholder. See console.");
+        if (!samDetected) { toastr.error("无法保存: 在世界信息中未检测到 SAM 标识符。"); return; }
+        // 此函数需要 TavernHelper，可能不可用。
+        // 目前，这是用户特定实现的占位符。
+        console.warn("saveFunctionsToWI 在此测试版本中未完全实现。");
+        toastr.info("函数保存功能是一个占位符。请查看控制台。");
     };
 
-    // --- Data Loading & refreshing ---
+    // --- 数据加载与刷新 ---
 
     const refreshData = useCallback(async (forceUpdate = false) => {
-        // MODIFIED: No longer checks sam_is_in_use() here, as the UI should always be available.
-        // The function was changed in the backend to always return true anyway.
+        // 已修改：不再在此处检查 sam_is_in_use()，因为UI应始终可用。
+        // 该函数在后端已被更改为始终返回true。
         try {
             const exists = await checkSamExistence();
             setSamDetected(exists);
@@ -619,11 +619,11 @@ function App() {
             if (funcs && (!showInterface || forceUpdate)) setDraftFunctions(funcs);
             if (!isDataReady) setIsDataReady(true);
         } catch (e) {
-            console.error("[SAM frontend] Refresh Error:", e);
+            console.error("[SAM 前端] 刷新错误:", e);
         }
     }, [showInterface, isDataReady]);
 
-    // --- Event Listeners & Heartbeat ---
+    // --- 事件监听器与心跳 ---
 
     useEffect(() => {
         const onInvalidate = () => refreshData(true);
@@ -667,28 +667,28 @@ function App() {
         return () => clearInterval(interval);
     }, [showInterface]);
 
-    // --- Handlers ---
+    // --- 处理程序 ---
 
     const handleManualRefresh = () => {
-        if (window.confirm("Refresh data? Unsaved changes will be lost.")) {
+        if (window.confirm("刷新数据？未保存的更改将会丢失。")) {
             refreshData(true);
-            toastr.info("UI Refreshed.");
+            toastr.info("界面已刷新。");
         }
     };
 
     const handleCommitData = async () => {
-        if (!samDetected) { toastr.error("Locked: SAM Identifier missing."); return; }
+        if (!samDetected) { toastr.error("已锁定: 缺少 SAM 标识符。"); return; }
         try {
             const cleanData = { ...draftSamData };
             cleanData.responseSummary = draftSummaries;
             await sam_set_data(cleanData);
-            toastr.success("Data committed to State.");
-        } catch (e) { console.error(e); toastr.error("Error committing data: " + e.message); }
+            toastr.success("数据已提交到状态。");
+        } catch (e) { console.error(e); toastr.error("提交数据时出错: " + e.message); }
     };
 
     const handleCommitFunctions = async () => {
-        if (!samDetected) { toastr.error("Locked: SAM Identifier missing."); return; }
-        if (window.confirm("This will overwrite the Function Library in World Info. Continue?")) {
+        if (!samDetected) { toastr.error("已锁定: 缺少 SAM 标识符。"); return; }
+        if (window.confirm("这将覆盖世界信息中的函数库。要继续吗？")) {
             await saveFunctionsToWI(draftFunctions);
         }
     };
@@ -702,7 +702,7 @@ function App() {
     };
 
     const handleSummaryDelete = (level, index) => {
-        if (!window.confirm(`Are you sure you want to delete this ${level} summary?`)) return;
+        if (!window.confirm(`您确定要删除这个 ${level} 级摘要吗？`)) return;
         setDraftSummaries(prev => {
             const newSummaries = [...(prev[level] || [])];
             newSummaries.splice(index, 1);
@@ -715,24 +715,24 @@ function App() {
             await sam_set_setting('summary_levels', draftSamSettings.summary_levels);
             await sam_set_setting('summary_prompt', draftSamSettings.summary_prompt);
             await sam_set_setting('summary_prompt_L3', draftSamSettings.summary_prompt_L3);
-            toastr.success("Summary settings saved.");
-        } catch (e) { console.error(e); toastr.error("Error saving summary settings: " + e.message); }
+            toastr.success("摘要设置已保存。");
+        } catch (e) { console.error(e); toastr.error("保存摘要设置时出错: " + e.message); }
     };
 
     const handleSaveRegexSettings = async () => {
         try {
             await sam_set_setting('regexes', draftSamSettings.regexes);
-            toastr.success("Regex settings saved.");
+            toastr.success("正则表达式设置已保存。");
         } catch (e) {
             console.error(e);
-            toastr.error("Error saving regex settings: " + e.message);
+            toastr.error("保存正则表达式设置时出错: " + e.message);
         }
     };
 
     const handleTriggerSummary = async () => {
-        if (!samDetected) { toastr.error("Locked: SAM Identifier missing."); return; }
-        if (isBusy) { toastr.warning("Core is busy. Cannot run summary now."); return; }
-        toastr.info("Triggering manual summary...");
+        if (!samDetected) { toastr.error("已锁定: 缺少 SAM 标识符。"); return; }
+        if (isBusy) { toastr.warning("核心正忙。现在无法运行摘要。"); return; }
+        toastr.info("正在触发手动摘要...");
         await sam_summary();
     };
 
@@ -744,36 +744,36 @@ function App() {
     const handleSaveApiPreset = async (presetData) => {
         try {
             await sam_save_api_preset(presetData.name, presetData);
-            toastr.success(`Preset "${presetData.name}" saved.`);
+            toastr.success(`预设 "${presetData.name}" 已保存。`);
             refreshData(true);
         } catch (e) {
             console.error(e);
-            toastr.error("Error saving preset: " + e.message);
+            toastr.error("保存预设时出错: " + e.message);
         }
     };
 
     const handleDeleteApiPreset = async (presetName) => {
         try {
             await sam_delete_api_preset(presetName);
-            toastr.info(`Preset "${presetName}" deleted.`);
+            toastr.info(`预设 "${presetName}" 已删除。`);
             if (draftSamSettings.summary_api_preset === presetName) {
                 await sam_set_active_preset(null);
             }
             refreshData(true);
         } catch (e) {
             console.error(e);
-            toastr.error("Error deleting preset: " + e.message);
+            toastr.error("删除预设时出错: " + e.message);
         }
     };
 
     const handleSetActivePreset = async (presetName) => {
         try {
             await sam_set_active_preset(presetName);
-            toastr.success(`"${presetName}" is now the active preset for summaries.`);
+            toastr.success(`"${presetName}" 现在是摘要的活动预设。`);
             refreshData(true);
         } catch (e) {
             console.error(e);
-            toastr.error("Error setting active preset: " + e.message);
+            toastr.error("设置活动预设时出错: " + e.message);
         }
     };
 
@@ -790,28 +790,28 @@ function App() {
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            toastr.success("Settings exported.");
+            toastr.success("设置已导出。");
         } catch (e) {
             console.error(e);
-            toastr.error("Failed to export settings.");
+            toastr.error("导出设置失败。");
         }
     };
 
     const handleImportSettings = async (settingsObject) => {
-        if (window.confirm("This will overwrite your current settings (except API presets). Are you sure?")) {
+        if (window.confirm("这将覆盖您当前的设置 (API预设除外)。您确定吗？")) {
             await sam_set_all_settings(settingsObject);
             refreshData(true);
         }
     };
 
-    // --- Render ---
+    // --- 渲染 ---
 
     const drawerContent = (
-        <ExtensionDrawer title={`SAM v${SCRIPT_VERSION}`} warning={!samDetected ? "Not Detected" : null}>
+        <ExtensionDrawer title={`SAM v${SCRIPT_VERSION}`} warning={!samDetected ? "未检测到" : null}>
             <div className="sam_drawer_controls">
-                {!samDetected && (<div className="sam_warning_box">SAM Identifier not found in World Info.</div>)}
-                 <button onClick={() => setShowInterface(true)} className="sam_menu_button full_width">Open Configuration Manager</button>
-                <div className="sam_status_micro">Status: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
+                {!samDetected && (<div className="sam_warning_box">在世界信息中未找到 SAM 标识符。</div>)}
+                 <button onClick={() => setShowInterface(true)} className="sam_menu_button full_width">打开配置管理器</button>
+                <div className="sam_status_micro">状态: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
             </div>
         </ExtensionDrawer>
     );
@@ -821,51 +821,51 @@ function App() {
             <Draggable handle=".sam_modal_header" nodeRef={nodeRef}>
                 <div className="sam_app_window" ref={nodeRef} style={activeTab === 'SUMMARY' ? { height: '95vh', maxHeight: '1200px' } : {}}>
                     <div className="sam_modal_header">
-                        <div className="sam_header_title"><span className="sam_brand">SAM</span> MANAGER<span className="sam_version"> v{SCRIPT_VERSION}</span></div>
+                        <div className="sam_header_title"><span className="sam_brand">SAM</span> 管理器<span className="sam_version"> v{SCRIPT_VERSION}</span></div>
                         <button onClick={() => setShowInterface(false)} className="sam_close_icon">✕</button>
                     </div>
-                    {!samDetected && (<div className="sam_banner_error">SAM Identifier ({SAM_FUNCTIONLIB_ID}) not detected. Functionality that modifies character data is locked.</div>)}
+                    {!samDetected && (<div className="sam_banner_error">未检测到 SAM 标识符 ({SAM_FUNCTIONLIB_ID})。修改角色数据的功能已被锁定。</div>)}
                     <div className="sam_tabs">
-                        <button className={`sam_tab ${activeTab === 'SUMMARY' ? 'active' : ''}`} onClick={() => setActiveTab('SUMMARY')}>Summary</button>
-                        <button className={`sam_tab ${activeTab === 'CONNECTIONS' ? 'active' : ''}`} onClick={() => setActiveTab('CONNECTIONS')}>Connections</button>
-                        <button className={`sam_tab ${activeTab === 'REGEX' ? 'active' : ''}`} onClick={() => setActiveTab('REGEX')}>Regex</button>
-                        <button className={`sam_tab ${activeTab === 'DATA' ? 'active' : ''}`} onClick={() => setActiveTab('DATA')}>Data</button>
-                        <button className={`sam_tab ${activeTab === 'FUNCS' ? 'active' : ''}`} onClick={() => setActiveTab('FUNCS')}>Functions</button>
-                        <button className={`sam_tab ${activeTab === 'SETTINGS' ? 'active' : ''}`} onClick={() => setActiveTab('SETTINGS')}>Settings</button>
+                        <button className={`sam_tab ${activeTab === 'SUMMARY' ? 'active' : ''}`} onClick={() => setActiveTab('SUMMARY')}>摘要</button>
+                        <button className={`sam_tab ${activeTab === 'CONNECTIONS' ? 'active' : ''}`} onClick={() => setActiveTab('CONNECTIONS')}>连接</button>
+                        <button className={`sam_tab ${activeTab === 'REGEX' ? 'active' : ''}`} onClick={() => setActiveTab('REGEX')}>正则</button>
+                        <button className={`sam_tab ${activeTab === 'DATA' ? 'active' : ''}`} onClick={() => setActiveTab('DATA')}>数据</button>
+                        <button className={`sam_tab ${activeTab === 'FUNCS' ? 'active' : ''}`} onClick={() => setActiveTab('FUNCS')}>函数</button>
+                        <button className={`sam_tab ${activeTab === 'SETTINGS' ? 'active' : ''}`} onClick={() => setActiveTab('SETTINGS')}>设置</button>
                     </div>
                     <div className="sam_content_area">
                         {activeTab === 'DATA' && (
                             <div className={`sam_panel_content ${isBusy ? 'disabled' : ''}`}>
-                                <h4 className="sam_panel_label">Raw JSON State {isBusy ? "(Locked - Core Busy)" : ""}</h4>
+                                <h4 className="sam_panel_label">原始 JSON 状态 {isBusy ? "(已锁定 - 核心正忙)" : ""}</h4>
                                 <div className="sam_json_wrapper">
-                                    {isDataReady ? (<JSONEditor id="sam_json_edit" placeholder={draftSamData} onChange={handleJsonChange} locale={locale} theme="dark_vscode_tribute" height="100%" width="100%" colors={{ background: 'transparent' }} viewOnly={isBusy || !samDetected} />) : (<div className="sam_empty_state">Loading data...</div>)}
+                                    {isDataReady ? (<JSONEditor id="sam_json_edit" placeholder={draftSamData} onChange={handleJsonChange} locale={locale} theme="dark_vscode_tribute" height="100%" width="100%" colors={{ background: 'transparent' }} viewOnly={isBusy || !samDetected} />) : (<div className="sam_empty_state">正在加载数据...</div>)}
                                 </div>
-                                <div className="sam_actions" style={{marginTop: '10px'}}><button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy || !samDetected}>Commit Data Changes</button></div>
+                                <div className="sam_actions" style={{marginTop: '10px'}}><button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy || !samDetected}>提交数据更改</button></div>
                             </div>
                         )}
                         {activeTab === 'SUMMARY' && (
                             <div className="sam_panel_content full_height layout_column">
                                 <div className="sam_summary_settings_section">
-                                    <h3 className="sam_section_title">Hierarchical Summary Configuration</h3>
+                                    <h3 className="sam_section_title">分层摘要配置</h3>
 
                                     <div className="sam_form_row" style={{ padding: '0 0 10px 0', borderBottom: '1px solid #444', marginBottom: '15px' }}>
-                                        <label className="sam_label" style={{ width: 'auto', marginRight: '10px' }}>Current Progress (Last Summarized Index):</label>
+                                        <label className="sam_label" style={{ width: 'auto', marginRight: '10px' }}>当前进度 (最后摘要的索引):</label>
                                         <span style={{ fontFamily: 'monospace', fontSize: '1.1em', fontWeight: 'bold' }}>
                                             {draftSamData.summary_progress || 0}
                                         </span>
                                     </div>
 
                                     <div className="sam_form_grid_3">
-                                        <InputRow label="L1 Freq" type="number" value={draftSamSettings.summary_levels?.L1?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.frequency', v))} disabled={isBusy} />
-                                        <InputRow label="L2 Freq" type="number" value={draftSamSettings.summary_levels?.L2?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.frequency', v))} disabled={isBusy} />
-                                        <InputRow label="L3 Freq" type="number" value={draftSamSettings.summary_levels?.L3?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.frequency', v))} disabled={isBusy} />
+                                        <InputRow label="L1 频率" type="number" value={draftSamSettings.summary_levels?.L1?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.frequency', v))} disabled={isBusy} />
+                                        <InputRow label="L2 频率" type="number" value={draftSamSettings.summary_levels?.L2?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.frequency', v))} disabled={isBusy} />
+                                        <InputRow label="L3 频率" type="number" value={draftSamSettings.summary_levels?.L3?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.frequency', v))} disabled={isBusy} />
                                     </div>
-                                    <ToggleSwitch label="Enable L2 Summaries" value={draftSamSettings.summary_levels?.L2?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.enabled', v))} disabled={isBusy} />
-                                    <ToggleSwitch label="Enable L3 Summaries" value={draftSamSettings.summary_levels?.L3?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.enabled', v))} disabled={isBusy} />
+                                    <ToggleSwitch label="启用 L2 摘要" value={draftSamSettings.summary_levels?.L2?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.enabled', v))} disabled={isBusy} />
+                                    <ToggleSwitch label="启用 L3 摘要" value={draftSamSettings.summary_levels?.L3?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.enabled', v))} disabled={isBusy} />
 
-                                    <div className={`sam_form_column ${isBusy ? 'sam_disabled' : ''}`}><label className="sam_label">L2 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))} disabled={isBusy} /></div>
-                                    <div className={`sam_form_column ${isBusy ? 'sam_disabled' : ''}`}><label className="sam_label">L3 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt_L3 || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt_L3: e.target.value}))} disabled={isBusy} /></div>
-                                    <div className="sam_actions"><button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary" disabled={isBusy}>Save Config</button><button onClick={handleTriggerSummary} className="sam_btn sam_btn_secondary" disabled={isBusy || !samDetected}>Run Summarization Now</button></div>
+                                    <div className={`sam_form_column ${isBusy ? 'sam_disabled' : ''}`}><label className="sam_label">L2 生成提示</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))} disabled={isBusy} /></div>
+                                    <div className={`sam_form_column ${isBusy ? 'sam_disabled' : ''}`}><label className="sam_label">L3 生成提示</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt_L3 || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt_L3: e.target.value}))} disabled={isBusy} /></div>
+                                    <div className="sam_actions"><button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary" disabled={isBusy}>保存配置</button><button onClick={handleTriggerSummary} className="sam_btn sam_btn_secondary" disabled={isBusy || !samDetected}>立即运行摘要</button></div>
                                 </div>
                                 <hr className="sam_divider" />
                                 <div className="sam_summary_display_area">
@@ -873,7 +873,7 @@ function App() {
                                     <SummaryLevelPanel level="L2" summaries={draftSummaries.L2 || []} onEdit={handleSummaryContentChange} onDelete={handleSummaryDelete} disabled={isBusy || !samDetected} />
                                     <SummaryLevelPanel level="L1" summaries={draftSummaries.L1 || []} onEdit={handleSummaryContentChange} onDelete={handleSummaryDelete} disabled={isBusy || !samDetected} />
                                 </div>
-                                <div className="sam_actions" style={{marginTop:'auto', paddingTop: '10px'}}><button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy || !samDetected}>Save All Edited Summaries</button></div>
+                                <div className="sam_actions" style={{marginTop:'auto', paddingTop: '10px'}}><button onClick={handleCommitData} className="sam_btn sam_btn_primary" disabled={isBusy || !samDetected}>保存所有编辑过的摘要</button></div>
                             </div>
                         )}
                         {activeTab === 'REGEX' && (
@@ -910,9 +910,9 @@ function App() {
                         )}
                     </div>
                     <div className="sam_modal_footer">
-                        {/* MODIFIED: Updated status text to be more descriptive */}
-                        <div className="sam_status_bar">Status: {samDetected ? (draftSamSettings.data_enable ? "Data Active" : "Data Disabled") : "MISSING ID"} | Core State: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
-                        <div className="sam_actions"><button onClick={handleManualRefresh} className="sam_btn sam_btn_secondary">Refresh UI</button><button onClick={() => setShowInterface(false)} className="sam_btn sam_btn_secondary">Close</button></div>
+                        {/* 已修改：状态文本更具描述性 */}
+                        <div className="sam_status_bar">状态: {samDetected ? (draftSamSettings.data_enable ? "数据活动" : "数据禁用") : "缺少ID"} | 核心状态: <span className={isBusy ? 'busy' : 'idle'}>{samStatusText}</span></div>
+                        <div className="sam_actions"><button onClick={handleManualRefresh} className="sam_btn sam_btn_secondary">刷新界面</button><button onClick={() => setShowInterface(false)} className="sam_btn sam_btn_secondary">关闭</button></div>
                     </div>
                 </div>
             </Draggable>

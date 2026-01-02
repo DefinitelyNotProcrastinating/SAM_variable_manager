@@ -6,7 +6,7 @@
     "js": "dist/index.js",
     "css": "src/App.css",
     "author": "Sam",
-    "version": "3.0.4",
+    "version": "3.0.5",
     "homePage": "https://github.com/DefinitelyNotProcrastinating/SAM_variable_manager",
     "auto_update": true
 }
