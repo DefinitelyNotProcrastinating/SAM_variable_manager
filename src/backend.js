@@ -620,6 +620,8 @@
         sam_set_setting: saveSamSettings,
         sam_export_all_settings,
         sam_set_all_settings,
+
+        checkWorldInfoActivation,
         
         // API Presets
         sam_save_api_preset,

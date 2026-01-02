@@ -3,7 +3,7 @@ import ReactDOM from 'react-dom';
 import Draggable from 'react-draggable';
 import JSONEditor from 'react-json-editor-ajrm';
 import locale from 'react-json-editor-ajrm/locale/en';
-import {
+import backend, {
     sam_get_data,
     sam_set_data,
     sam_get_settings,
@@ -11,6 +11,7 @@ import {
     sam_is_in_use,
     sam_summary,
     sam_get_status,
+    checkWorldInfoActivation,
     // NEWLY IMPORTED FUNCTIONS
     sam_save_api_preset,
     sam_delete_api_preset,
@@ -88,7 +89,7 @@ const InputRow = ({ label, type = "text", value, onChange, placeholder, disabled
 
 // --- Sub-Panels ---
 
-const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, disabled, onImport, onExport }) => {
+const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, disabled, onImport, onExport, dataLocked }) => {
     const fileInputRef = useRef(null);
 
     const handleSettingChange = (key, val) => {
@@ -97,7 +98,7 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
     };
 
     const handleDataChange = (key, val) => {
-        if(disabled) return;
+        if(disabled || dataLocked) return;
         setData(prev => ({ ...prev, [key]: val }));
     };
 
@@ -110,10 +111,14 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
             await sam_set_setting('auto_checkpoint_frequency', settings.auto_checkpoint_frequency);
             await sam_set_setting('skipWIAN_When_summarizing', settings.skipWIAN_When_summarizing);
 
-            // Save state-specific data
-            await onCommitData();
+            // Save state-specific data only if it's not locked
+            if (!dataLocked) {
+                await onCommitData();
+                toastr.success("Settings and Data configuration saved successfully.");
+            } else {
+                toastr.success("Global settings saved. Data configuration is locked because SAM identifier is missing.");
+            }
 
-            toastr.success("Settings and Data configuration saved successfully.");
         } catch (e) {
             console.error(e);
             toastr.error("Error saving settings: " + e.message);
@@ -153,9 +158,9 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
             <ToggleSwitch label="Skip WI/AN during Summary" value={settings.skipWIAN_When_summarizing} onChange={(v) => handleSettingChange('skipWIAN_When_summarizing', v)} disabled={disabled} />
 
             <h3 className="sam_section_title">Data & State Configuration</h3>
-            <p className="sam_help_text">These settings are saved to the current story state (SAM_data).</p>
-            <ToggleSwitch label="Disable Data Type Mutation" value={!!data.disable_dtype_mutation} onChange={(v) => handleDataChange('disable_dtype_mutation', v)} disabled={disabled} />
-            <ToggleSwitch label="Uniquely Identified Paths" value={!!data.uniquely_identified} onChange={(v) => handleDataChange('uniquely_identified', v)} disabled={disabled} />
+            <p className="sam_help_text">These settings are saved to the current story state (SAM_data). Access is locked if the SAM identifier is not detected.</p>
+            <ToggleSwitch label="Disable Data Type Mutation" value={!!data.disable_dtype_mutation} onChange={(v) => handleDataChange('disable_dtype_mutation', v)} disabled={disabled || dataLocked} />
+            <ToggleSwitch label="Uniquely Identified Paths" value={!!data.uniquely_identified} onChange={(v) => handleDataChange('uniquely_identified', v)} disabled={disabled || dataLocked} />
 
             <div className="sam_actions" style={{ marginTop: '20px' }}>
                 <button onClick={handleSaveAll} className="sam_btn sam_btn_primary" disabled={disabled}>Save All Settings</button>
@@ -173,7 +178,7 @@ const SettingsPanel = ({ settings, setSettings, data, setData, onCommitData, dis
     );
 };
 
-const FunctionEditor = ({ functions, setFunctions, onCommit, disabled }) => {
+const FunctionEditor = ({ functions, setFunctions, onCommit, disabled, commitDisabled }) => {
     const [selectedIndex, setSelectedIndex] = useState(-1);
 
     const handleAdd = () => {
@@ -208,7 +213,7 @@ const FunctionEditor = ({ functions, setFunctions, onCommit, disabled }) => {
                 <ul>
                     {functions.map((f, i) => (<li key={i} className={i === selectedIndex ? 'active' : ''} onClick={() => setSelectedIndex(i)}>{f.func_name}<span className="sam_delete_icon" onClick={(e) => { e.stopPropagation(); if(!disabled) handleDelete(i); }}>×</span></li>))}
                 </ul>
-                <div style={{padding: '10px'}}><button className="sam_btn sam_btn_primary full_width" onClick={onCommit} disabled={disabled}>Save to World Info</button></div>
+                <div style={{padding: '10px'}}><button className="sam_btn sam_btn_primary full_width" onClick={onCommit} disabled={disabled || commitDisabled}>Save to World Info</button></div>
             </div>
             <div className="sam_detail_view">
                 {selectedFunc ? (<div className="sam_scrollable_form">
@@ -657,6 +662,7 @@ function App() {
         if (!showInterface) return;
         const interval = setInterval(() => {
             eventSource.emit(SAM_EVENTS.EXT_ASK_STATUS);
+            checkWorldInfoActivation();
         }, 2500);
         return () => clearInterval(interval);
     }, [showInterface]);
@@ -792,7 +798,6 @@ function App() {
     };
 
     const handleImportSettings = async (settingsObject) => {
-        if (!samDetected) return;
         if (window.confirm("This will overwrite your current settings (except API presets). Are you sure?")) {
             await sam_set_all_settings(settingsObject);
             refreshData(true);
@@ -819,7 +824,7 @@ function App() {
                         <div className="sam_header_title"><span className="sam_brand">SAM</span> MANAGER<span className="sam_version"> v{SCRIPT_VERSION}</span></div>
                         <button onClick={() => setShowInterface(false)} className="sam_close_icon">✕</button>
                     </div>
-                    {!samDetected && (<div className="sam_banner_error">SAM Identifier ({SAM_FUNCTIONLIB_ID}) not detected. Functionality is locked.</div>)}
+                    {!samDetected && (<div className="sam_banner_error">SAM Identifier ({SAM_FUNCTIONLIB_ID}) not detected. Functionality that modifies character data is locked.</div>)}
                     <div className="sam_tabs">
                         <button className={`sam_tab ${activeTab === 'SUMMARY' ? 'active' : ''}`} onClick={() => setActiveTab('SUMMARY')}>Summary</button>
                         <button className={`sam_tab ${activeTab === 'CONNECTIONS' ? 'active' : ''}`} onClick={() => setActiveTab('CONNECTIONS')}>Connections</button>
@@ -828,7 +833,7 @@ function App() {
                         <button className={`sam_tab ${activeTab === 'FUNCS' ? 'active' : ''}`} onClick={() => setActiveTab('FUNCS')}>Functions</button>
                         <button className={`sam_tab ${activeTab === 'SETTINGS' ? 'active' : ''}`} onClick={() => setActiveTab('SETTINGS')}>Settings</button>
                     </div>
-                    <div className={`sam_content_area ${!samDetected ? 'sam_area_disabled' : ''}`}>
+                    <div className="sam_content_area">
                         {activeTab === 'DATA' && (
                             <div className={`sam_panel_content ${isBusy ? 'disabled' : ''}`}>
                                 <h4 className="sam_panel_label">Raw JSON State {isBusy ? "(Locked - Core Busy)" : ""}</h4>
@@ -851,16 +856,16 @@ function App() {
                                     </div>
 
                                     <div className="sam_form_grid_3">
-                                        <InputRow label="L1 Freq" type="number" value={draftSamSettings.summary_levels?.L1?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.frequency', v))} disabled={!samDetected} />
-                                        <InputRow label="L2 Freq" type="number" value={draftSamSettings.summary_levels?.L2?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.frequency', v))} disabled={!samDetected} />
-                                        <InputRow label="L3 Freq" type="number" value={draftSamSettings.summary_levels?.L3?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.frequency', v))} disabled={!samDetected} />
+                                        <InputRow label="L1 Freq" type="number" value={draftSamSettings.summary_levels?.L1?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L1.frequency', v))} disabled={isBusy} />
+                                        <InputRow label="L2 Freq" type="number" value={draftSamSettings.summary_levels?.L2?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.frequency', v))} disabled={isBusy} />
+                                        <InputRow label="L3 Freq" type="number" value={draftSamSettings.summary_levels?.L3?.frequency || ''} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.frequency', v))} disabled={isBusy} />
                                     </div>
-                                    <ToggleSwitch label="Enable L2 Summaries" value={draftSamSettings.summary_levels?.L2?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.enabled', v))} disabled={!samDetected} />
-                                    <ToggleSwitch label="Enable L3 Summaries" value={draftSamSettings.summary_levels?.L3?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.enabled', v))} disabled={!samDetected} />
+                                    <ToggleSwitch label="Enable L2 Summaries" value={draftSamSettings.summary_levels?.L2?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L2.enabled', v))} disabled={isBusy} />
+                                    <ToggleSwitch label="Enable L3 Summaries" value={draftSamSettings.summary_levels?.L3?.enabled ?? true} onChange={(v) => setDraftSamSettings(p => _.set({...p}, 'summary_levels.L3.enabled', v))} disabled={isBusy} />
 
-                                    <div className={`sam_form_column ${!samDetected ? 'sam_disabled' : ''}`}><label className="sam_label">L2 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))} disabled={!samDetected} /></div>
-                                    <div className={`sam_form_column ${!samDetected ? 'sam_disabled' : ''}`}><label className="sam_label">L3 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt_L3 || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt_L3: e.target.value}))} disabled={!samDetected} /></div>
-                                    <div className="sam_actions"><button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary" disabled={!samDetected}>Save Config</button><button onClick={handleTriggerSummary} className="sam_btn sam_btn_secondary" disabled={isBusy || !samDetected}>Run Summarization Now</button></div>
+                                    <div className={`sam_form_column ${isBusy ? 'sam_disabled' : ''}`}><label className="sam_label">L2 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt: e.target.value}))} disabled={isBusy} /></div>
+                                    <div className={`sam_form_column ${isBusy ? 'sam_disabled' : ''}`}><label className="sam_label">L3 Generation Prompt</label><textarea className="sam_textarea_medium" value={draftSamSettings.summary_prompt_L3 || ''} onChange={(e) => setDraftSamSettings(p => ({...p, summary_prompt_L3: e.target.value}))} disabled={isBusy} /></div>
+                                    <div className="sam_actions"><button onClick={handleSaveSummarySettings} className="sam_btn sam_btn_primary" disabled={isBusy}>Save Config</button><button onClick={handleTriggerSummary} className="sam_btn sam_btn_secondary" disabled={isBusy || !samDetected}>Run Summarization Now</button></div>
                                 </div>
                                 <hr className="sam_divider" />
                                 <div className="sam_summary_display_area">
@@ -876,7 +881,7 @@ function App() {
                                 regexes={draftSamSettings.regexes || []}
                                 setRegexes={(newRegexes) => setDraftSamSettings(p => ({ ...p, regexes: newRegexes }))}
                                 onSave={handleSaveRegexSettings}
-                                disabled={!samDetected}
+                                disabled={isBusy}
                             />
                         )}
                         {activeTab === 'CONNECTIONS' && (
@@ -886,10 +891,10 @@ function App() {
                                 onSave={handleSaveApiPreset}
                                 onDelete={handleDeleteApiPreset}
                                 onSetActive={handleSetActivePreset}
-                                disabled={!samDetected}
+                                disabled={isBusy}
                             />
                         )}
-                        {activeTab === 'FUNCS' && (<FunctionEditor functions={draftFunctions} setFunctions={setDraftFunctions} onCommit={handleCommitFunctions} disabled={!samDetected} />)}
+                        {activeTab === 'FUNCS' && (<FunctionEditor functions={draftFunctions} setFunctions={setDraftFunctions} onCommit={handleCommitFunctions} disabled={isBusy} commitDisabled={!samDetected} />)}
                         {activeTab === 'SETTINGS' && (
                              <SettingsPanel
                                 settings={draftSamSettings}
@@ -897,7 +902,8 @@ function App() {
                                 data={draftSamData}
                                 setData={setDraftSamData}
                                 onCommitData={handleCommitData}
-                                disabled={!samDetected}
+                                disabled={isBusy}
+                                dataLocked={!samDetected}
                                 onExport={handleExportSettings}
                                 onImport={handleImportSettings}
                              />
