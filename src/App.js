@@ -587,19 +587,97 @@ function App() {
         } catch (e) { console.error("[SAM 前端] 从世界信息获取函数时出错", e); return []; }
     };
 
-    const saveFunctionsToWI = async (functions) => {
-        if (!samDetected) { toastr.error("无法保存: 在世界信息中未检测到 SAM 标识符。"); return; }
-        // 此函数需要 TavernHelper，可能不可用。
-        // 目前，这是用户特定实现的占位符。
-        console.warn("saveFunctionsToWI 在此测试版本中未完全实现。");
-        toastr.info("函数保存功能是一个占位符。请查看控制台。");
+const saveFunctionsToWI = async (functions) => {
+        if (!samDetected) {
+            toastr.error("Cannot save: SAM Identifier not detected in World Info.");
+            return;
+        }
+
+        const characterWIName = await TavernHelper.getCurrentCharPrimaryLorebook();
+        if (!characterWIName){
+            toastr.error("This character does not have a WI");
+            return;
+        }
+        const worldInfoName = await TavernHelper.getWorldbook(characterWIName);
+
+        if (!worldInfoName) {
+            toastr.error("No World Info file associated with this character. Please create one first.");
+            return;
+        }
+
+        const funcString = JSON.stringify(functions, null, 2);
+
+        try {
+            let create_new = false;
+            let newIndex = 0;
+            const entryData = {
+                    name: SAM_FUNCTIONLIB_ID,
+                    enabled: false,
+                    strategy: {
+                        type: "selective",
+                        keys: [],
+                        keys_secondary: { "logic": "and_any", "keys": [] },
+                        "scan_depth": 3
+                    },
+                    "position": {
+                        "type": "at_depth",
+                        "role": "system",
+                        "depth": 543,
+                        "order": 543
+                    },
+                    content: funcString,
+                    probability: 100,
+                    recursion: {
+                        "prevent_incoming": true,
+                        "prevent_outgoing": true,
+                        "delay_until": null
+                    },
+                    effect: { "sticky": null, "cooldown": null, "delay": null },
+                    addMemo: true,
+                    "matchPersonaDescription": false,
+                    "matchCharacterDescription": false,
+                    "matchCharacterPersonality": false,
+                    "matchCharacterDepthPrompt": false,
+                    "matchScenario": false,
+                    "matchCreatorNotes": false,
+                    "group": "",
+                    "groupOverride": false,
+                    "groupWeight": 100,
+                    "caseSensitive": false,
+                    "matchWholeWords": null,
+                    "useGroupScoring": null,
+                    "automationId": ""
+                }
+            await TavernHelper.updateWorldbookWith(characterWIName, (worldbook) => {
+                const entries = worldbook;
+                const entryKey = _.findKey(entries, (entry) => entry.name === SAM_FUNCTIONLIB_ID);
+
+                if (entryKey) {
+                    _.merge(entries[entryKey], entryData);
+                } else {
+                    while (entries[String(newIndex)]) newIndex++;
+                    create_new = true;
+                }
+                return worldbook;
+            });
+
+            if (create_new){
+                await TavernHelper.createWorldbookEntries(characterWIName, {
+                        uid: newIndex, 
+                        ...entryData
+                    });
+            }
+
+            toastr.success("Functions saved to World Info Library.");
+        } catch (e) {
+            console.error(e);
+            toastr.error("Failed to save functions to WI.");
+        }
     };
 
     // --- 数据加载与刷新 ---
 
     const refreshData = useCallback(async (forceUpdate = false) => {
-        // 已修改：不再在此处检查 sam_is_in_use()，因为UI应始终可用。
-        // 该函数在后端已被更改为始终返回true。
         try {
             const exists = await checkSamExistence();
             setSamDetected(exists);
