@@ -18,6 +18,8 @@
         ABORTED: "ABORTED"
     };
 
+    let gen_counter = 0;
+
     let sam_fsm_state = SAM_STATES.IDLE;
 
     // --- DRY RUN TRACKING ---
@@ -383,15 +385,27 @@
     }
 
     function serialize_memory() {
-        const data = sync_getVariables();
-        let serialized_memory_parts = [];
-        const levels = Object.keys(data.responseSummary || {}).sort().reverse();
-        for (const level of levels) {
-            for (const summary of (data.responseSummary[level] || [])) {
-                serialized_memory_parts.push(`[${level} Summary | Range: ${summary.index_begin}-${summary.index_end}]: ${summary.content}`);
-            }
-        }
-        return serialized_memory_parts.join('\n');
+    const data = sync_getVariables();
+    let allSummaries = [];
+
+    // Combine L2 and L3 summaries, adding a 'level' property to each
+    if (data.responseSummary && Array.isArray(data.responseSummary.L2)) {
+        allSummaries = allSummaries.concat(data.responseSummary.L2.map(summary => ({ ...summary, level: 'L2' })));
+    }
+    if (data.responseSummary && Array.isArray(data.responseSummary.L3)) {
+        allSummaries = allSummaries.concat(data.responseSummary.L3.map(summary => ({ ...summary, level: 'L3' })));
+    }
+
+    // Sort the combin
+    // ed array by the beginning of their range
+    allSummaries.sort((a, b) => a.index_begin - b.index_begin);
+
+    // Format the sorted summaries into strings
+    const serialized_memory_parts = allSummaries.map(summary => {
+        return `[${summary.level} Summary | Range: ${summary.index_begin}-${summary.index_end}]: ${summary.content}`;
+    });
+
+    return serialized_memory_parts.join('\n');
     }
 
 
@@ -441,11 +455,9 @@
         const presetName = settings.summary_api_preset;
         let resultL2;
 
-
         eventSource.emit(SAM_EVENTS.GENERATION_BEGIN);
         toastr.success("[SAM] Generating summary")
 
-        //console.log(promptL2);
         if (!presetName || !apiManager) {
             if (!apiManager) logger.warn("APIManager not initialized.");
             logger.warn("No API preset selected. Falling back to main generateQuietPrompt.");
@@ -453,14 +465,6 @@
         } else {
             try {
                 logger.info(`Generating L2 summary with API preset: "${presetName}"`);
-
-
-                // solution:
-                // use system prompt to convert
-                // use user prompt to insert data
-                // then use user prompt to produce the final response?
-
-
                 resultL2 = await apiManager.generate([{ role: 'user', content: promptL2 }], presetName, null);
             } catch (e) {
                 logger.error("L2 Summarization with APIManager failed:", e);
@@ -475,6 +479,27 @@
             logger.warn("L2 Summarization aborted or failed. FSM will reset to IDLE.");
             return false;
         }
+
+        if (gen_counter > 0) {
+            logger.info(`Waiting for ${gen_counter} generation(s) to idle before saving summary...`);
+            while (gen_counter > 0) {
+                await new Promise(resolve => setTimeout(resolve, 250)); // Wait for 250ms
+            }
+            logger.info("Generation has idled. Proceeding with summary save.");
+        }
+
+        logger.info("Syncing with latest state data before applying summary updates to prevent overwrite.");
+        const latest_data = await getVariables();
+
+        // Preserve any modifications made to the summary object within this function's scope
+        // (e.g., filtering from a 'force' run), but update everything else from the latest source.
+        const preservedSummaries = data.responseSummary;
+        data = goodCopy(latest_data);
+        data.responseSummary = preservedSummaries;
+
+        // Re-initialize the local DB instance with the latest database state to ensure
+        // any new inserts are added to the most recent version.
+        await initializeDatabase(data.jsondb);
 
         const { summaryContent, newInserts } = parseAiResponseForL2(resultL2);
 
@@ -521,7 +546,7 @@
             // --- END L3 TRIGGER ---
 
             if (sam_db && sam_db.isInitialized) data.jsondb = sam_db.export();
-
+            
             setTimeout(() => { sam_set_data(data); }, 100);
 
             await eventSource.emit(SAM_EVENTS.INV);
@@ -532,11 +557,22 @@
 
     const handlers = {
         handleGenerationStarted: async (type, options, dry_run) => {
-            if (dry_run) current_run_is_dry = true;
-            else current_run_is_dry = false;
+            if (dry_run) {
+                current_run_is_dry = true; 
+                gen_counter ++;
+                return;
+            }
+            else { 
+                current_run_is_dry = false; 
+            }
         },
         handleGenerationEnded: async () => {
-            if (current_run_is_dry) { current_run_is_dry = false; return; }
+            if (current_run_is_dry) {
+                current_run_is_dry = false;
+                gen_counter --;
+                return; 
+
+            }
             await SAM_FSM.triggerCheck();
         },
         handleGenerationStopped: async () => {
@@ -686,3 +722,12 @@
         });
     })();
 })();
+
+/**
+ * 
+ * New plans: 
+ * More event triggered functions to handle swipes
+ * 
+ * 
+ * 
+ */
