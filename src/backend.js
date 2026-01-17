@@ -361,13 +361,17 @@
 
                     try {
                         args = JSON.parse(`{${fixedStr}}`);
-                    } catch (e2) { }
+                    } catch (e2) {
+                        console.error("Failed to parse insert command arguments:", e2);
+                    }
                 }
 
                 if (args && args.key && args.content && Array.isArray(args.keywords)) {
                     inserts.push({ key: args.key, content: args.content.trim(), keywords: args.keywords });
                 }
-            } catch (error) { }
+            } catch (error) { 
+                console.error("Error processing insert command:", error);
+            }
             return '';
         }).trim();
 
@@ -480,13 +484,10 @@
             return false;
         }
 
-        if (gen_counter > 0) {
-            logger.info(`Waiting for ${gen_counter} generation(s) to idle before saving summary...`);
-            while (gen_counter > 0) {
-                await new Promise(resolve => setTimeout(resolve, 250)); // Wait for 250ms
-            }
-            logger.info("Generation has idled. Proceeding with summary save.");
-        }
+        console.log("L2 Summary Result:", resultL2);
+
+
+        // await until FSM is idle
 
         logger.info("Syncing with latest state data before applying summary updates to prevent overwrite.");
         const latest_data = await getVariables();
@@ -503,6 +504,8 @@
 
         const { summaryContent, newInserts } = parseAiResponseForL2(resultL2);
 
+        
+
         if (summaryContent) {
             data.responseSummary.L2.push(new Summary(startIndex, endIndex, summaryContent, 0));
 
@@ -514,6 +517,9 @@
 
             // --- L3 SUMMARY TRIGGER ---
             const l3Settings = settings.summary_levels.L3;
+
+
+            /* 
             if (l3Settings.enabled && data.responseSummary.L2.length >= l3Settings.frequency) {
                 logger.info(`L3 summary threshold reached (${data.responseSummary.L2.length}/${l3Settings.frequency}). Generating L3 summary.`);
 
@@ -543,15 +549,21 @@
                     logger.warn("L3 summary generation failed. L2 summaries will be kept for next attempt.");
                 }
             }
+
+            */
             // --- END L3 TRIGGER ---
 
             if (sam_db && sam_db.isInitialized) data.jsondb = sam_db.export();
             
-            setTimeout(() => { sam_set_data(data); }, 100);
+            sam_set_data(data);
+
+            console.log("Updated SAM Data after summarization:", data);
+            toastr.success("[SAM] Summary generation completed successfully.");
 
             await eventSource.emit(SAM_EVENTS.INV);
             return true;
         }
+
         return false;
     }
 

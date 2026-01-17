@@ -715,6 +715,7 @@ const saveFunctionsToWI = async (functions) => {
         eventSource.on(SAM_EVENTS.INV, onInvalidate);
         eventSource.on(SAM_EVENTS.CORE_STATUS_RESPONSE, onStatusResponse);
         eventSource.on(eventTypes.CHAT_CHANGED, onInvalidate);
+        eventSource.on(eventSource.MESSAGE_SWIPED, onInvalidate);
 
         refreshData();
 
