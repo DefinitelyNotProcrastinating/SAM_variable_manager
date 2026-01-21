@@ -519,7 +519,7 @@
             const l3Settings = settings.summary_levels.L3;
 
 
-            /* 
+            
             if (l3Settings.enabled && data.responseSummary.L2.length >= l3Settings.frequency) {
                 logger.info(`L3 summary threshold reached (${data.responseSummary.L2.length}/${l3Settings.frequency}). Generating L3 summary.`);
 
@@ -550,7 +550,7 @@
                 }
             }
 
-            */
+            
             // --- END L3 TRIGGER ---
 
             if (sam_db && sam_db.isInitialized) data.jsondb = sam_db.export();
